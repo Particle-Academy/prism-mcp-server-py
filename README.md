@@ -69,7 +69,7 @@ revisions. Only `tools/list` and `tools/call` are supported. Wire results are
 `McpError` for transport mapping. Arbitrary handler diagnostic messages are
 excluded; a shared error category is retained.
 
-In-memory `listen()` returns a `memory://` identifier and empty token, not HTTP
+In-memory `listen()` returns a `memory://` identifier and `token: None`, not HTTP
 credentials or a dialable URL. Requests have no fixed timeout. `close()` releases
 pending request waiters, rejects further requests and is idempotent. Cancellation
 of handler-owned work is best-effort; an embedder must clean up application work

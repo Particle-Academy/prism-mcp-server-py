@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -69,7 +70,7 @@ def echo(args: JsonObject, _context: ToolContext) -> ToolResult:
 
 
 async def setup(
-    gate: ToolGate | None = None,
+    gate: ToolGate | Callable[[str, str, JsonObject], Awaitable[bool]] | None = None,
     guard: ResultGuard | None = None,
 ) -> tuple[Server, InMemoryTransport]:
     transport = InMemoryTransport()
@@ -398,6 +399,88 @@ def test_custom_gate_refuses_before_execution() -> None:
         with pytest.raises(McpError) as error:
             await transport.request(request("tools/call", {"name": "echo"}))
         assert error.value.code == ErrorCode.TOOL_DENIED.value
+        await server.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("verdict", [False, True])
+def test_async_gate_is_awaited_before_execution(verdict: bool) -> None:
+    async def scenario() -> None:
+        called: list[str] = []
+
+        async def gate(_server: str, _tool: str, _args: JsonObject) -> bool:
+            called.append("gate body")
+            return verdict
+
+        server, transport = await setup(gate=gate)
+
+        def handler(_args: JsonObject, _context: ToolContext) -> ToolResult:
+            called.append("handler")
+            return ToolResult("approved")
+
+        server.register(definition(), handler)
+        try:
+            if verdict:
+                assert await transport.request(request("tools/call", {"name": "echo"})) == {
+                    "content": [{"type": "text", "text": "approved"}],
+                    "isError": False,
+                }
+                assert called == ["gate body", "handler"]
+            else:
+                with pytest.raises(McpError) as error:
+                    await transport.request(request("tools/call", {"name": "echo"}))
+                assert error.value.code == ErrorCode.TOOL_DENIED.value
+                assert called == ["gate body"]
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_future_gate_is_awaited_before_execution() -> None:
+    async def scenario() -> None:
+        verdict: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        gate_started = asyncio.Event()
+
+        def gate(_server: str, _tool: str, _args: JsonObject) -> Awaitable[bool]:
+            gate_started.set()
+            return verdict
+
+        server, transport = await setup(gate=gate)
+        called: list[str] = []
+
+        def handler(_args: JsonObject, _context: ToolContext) -> ToolResult:
+            called.append("handler")
+            return ToolResult("must not execute")
+
+        server.register(definition(), handler)
+        try:
+            pending = asyncio.create_task(
+                transport.request(request("tools/call", {"name": "echo"}))
+            )
+            await gate_started.wait()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert called == []
+            assert not pending.done()
+            verdict.set_result(False)
+            with pytest.raises(McpError) as error:
+                await pending
+            assert error.value.code == ErrorCode.TOOL_DENIED.value
+            assert called == []
+        finally:
+            verdict.cancel()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_in_memory_endpoint_has_no_credential() -> None:
+    async def scenario() -> None:
+        transport = InMemoryTransport()
+        server = Server("fixture", transport)
+        assert await server.listen() == {"url": "memory://prism-mcp-server", "token": None}
         await server.close()
 
     asyncio.run(scenario())

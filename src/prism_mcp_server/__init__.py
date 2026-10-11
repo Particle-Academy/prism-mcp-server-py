@@ -61,7 +61,7 @@ RequestHandler: TypeAlias = Callable[[TransportRequest], Awaitable[Any]]
 
 class Endpoint(TypedDict):
     url: str
-    token: str
+    token: str | None
 
 
 class ServerTransport(Protocol):
@@ -88,7 +88,7 @@ class Server:
         self,
         server: str,
         transport: ServerTransport,
-        gate: ToolGate | None = None,
+        gate: ToolGate | Callable[[str, str, JsonObject], Awaitable[bool]] | None = None,
         guard: ResultGuard | None = None,
     ) -> None:
         self._server = server
@@ -151,7 +151,12 @@ class Server:
         args = _clone_object(arguments)
         headers = _mirrored_headers(request.headers)
         _resolve_mirrors(tool.mirrored, headers, args)
-        if not self._gate(self._server, name, args):
+        verdict = self._gate(self._server, name, args)
+        # Serving is asynchronous in both languages; gates may be sync or async.
+        # The sibling Python client's synchronous API remains unchanged.
+        if inspect.isawaitable(verdict):
+            verdict = await verdict
+        if not verdict:
             raise McpError(ErrorCode.TOOL_DENIED, "The gate refused this tool call.")
         try:
             result = tool.handler(args, {"server": self._server, "tool": name, "headers": headers})
@@ -286,7 +291,7 @@ class InMemoryTransport:
         if self._closed or self._handler is not None:
             raise McpError(ErrorCode.PROTOCOL_FAILURE, "Transport is closed or already listening.")
         self._handler = handler
-        return {"url": "memory://prism-mcp-server", "token": ""}
+        return {"url": "memory://prism-mcp-server", "token": None}
 
     async def request(self, request: TransportRequest) -> Any:
         handler = self._handler

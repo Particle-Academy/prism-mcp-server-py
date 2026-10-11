@@ -616,7 +616,17 @@ def test_close_releases_held_polls_even_with_suppressed_cancellation_and_release
                 assert await asyncio.to_thread(idle.recv, 1) == b""
             except ConnectionResetError:
                 pass
+            # Reuse alone cannot prove the old listener closed: new connections
+            # must be refused before a replacement listener claims the port.
+            with (
+                pytest.raises(ConnectionRefusedError),
+                await asyncio.to_thread(socket.create_connection, ("127.0.0.1", port), timeout=5),
+            ):
+                pass
             with socket.socket() as probe:
+                # Match HTTPServer's address reuse; accepted connections may
+                # still occupy TIME_WAIT on Linux after the listener is closed.
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 probe.bind(("127.0.0.1", port))
                 probe.listen()
             with pytest.raises(McpError):

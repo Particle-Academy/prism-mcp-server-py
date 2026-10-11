@@ -1,0 +1,273 @@
+{
+    "suite": "mcp-tool-digest",
+    "schema_version": 1,
+    "corpus_version": "0.1.0",
+    "generated_by": "prism-parity:tools/generate-mcp-digests.php — every digest below is EXECUTION OUTPUT, never hand-authored. A hand-written hash asserts the author's model of the encoder; a generated one asserts the encoder.",
+    "divergence_note": "Every row now agrees. Three did not, and what they cost is the reason to keep saying so: dig-0002, dig-0003 and dig-0007 produced a different digest in PHP than in either port, so a pin an operator computed against a PHP deployment REFUSED the same tool in a TypeScript or Python one. It failed closed, which is safe, but the refusal is indistinguishable from a rug pull and the usual answer to a pin refusing a tool you trust is to delete the pin — turning a safe failure into no protection at all. Closed 2026-09-04 in OPPOSITE directions, each judged on its merits: the reference moved on the empty map (an MCP input schema is a JSON Schema, and a JSON Schema is an object), and both ports moved on the absent description (a terse server stays callable, and `\"\"` was the reference's deliberate choice). EVERY DIGEST IN THIS FILE CHANGED. A pin recorded before 2026-09-04 does not match any of the three implementations and must be recomputed.",
+    "cases": [
+        {
+            "id": "dig-0001",
+            "title": "the ordinary tool",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "Search the docs",
+                "inputSchema": {
+                    "type": "object"
+                }
+            },
+            "digest": {
+                "php": "sha256:e13a94af7cda11486ac5a7c7cf35b1d7",
+                "ts": "sha256:e13a94af7cda11486ac5a7c7cf35b1d7",
+                "py": "sha256:e13a94af7cda11486ac5a7c7cf35b1d7"
+            },
+            "agrees": true,
+            "notes": "The control. If this row ever diverges, the disagreement is in the hash or the base material rather than in an edge case, and every other row in this suite is noise until it is fixed."
+        },
+        {
+            "id": "dig-0002",
+            "title": "no input schema at all",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "Search the docs"
+            },
+            "digest": {
+                "php": "sha256:0d329c5f18ee07b4b8575177e811d257",
+                "ts": "sha256:0d329c5f18ee07b4b8575177e811d257",
+                "py": "sha256:0d329c5f18ee07b4b8575177e811d257"
+            },
+            "agrees": true,
+            "material": {
+                "all": "{\"description\":\"Search the docs\",\"inputSchema\":{},\"name\":\"search\",\"title\":null}"
+            },
+            "notes": "CLOSED 2026-09-04, and the digest above is NOT the one this row carried before. PHP has one array type, so an absent schema defaulted to `[]` and encoded as `[]` where every other language encodes `{}` — the same F-3 artefact that skips rtp-0009 in value-object-roundtrip, surfacing a second time where it costs more, because this one is a SECURITY value. A schemaless tool is not exotic: `inputSchema` is optional in the MCP spec. The reference moved, because an MCP input schema is a JSON Schema and a JSON Schema is an object — PHP was simply the only language here unable to say so. Every pin for a schemaless tool that was computed against PHP before this change is now invalid and must be recomputed."
+        },
+        {
+            "id": "dig-0003",
+            "title": "an empty properties map nested inside a schema",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "d",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            "digest": {
+                "php": "sha256:086e3a6d90c2986d839c60242abdfd7b",
+                "ts": "sha256:086e3a6d90c2986d839c60242abdfd7b",
+                "py": "sha256:086e3a6d90c2986d839c60242abdfd7b"
+            },
+            "agrees": true,
+            "notes": "The same cause one level down, and the reason dig-0002 alone was never enough: a fix that special-cased the top-level `inputSchema` would have turned dig-0002 green and left this red. `{\"type\":\"object\",\"properties\":{}}` is what a zero-argument tool's schema actually looks like. CLOSED 2026-09-04, and NOT by promoting empty arrays to objects — that would have broken dig-0012 in the opposite direction. The reference stopped DISCARDING the answer instead: `tools/list` is decoded keeping an empty JSON object distinguishable from an empty array, so nothing has to be inferred."
+        },
+        {
+            "id": "dig-0004",
+            "title": "non-ASCII in the description",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "Ünïcödé — dash",
+                "inputSchema": {
+                    "type": "object"
+                }
+            },
+            "digest": {
+                "php": "sha256:87888f7c0d7b23ddad604d103a70eb93",
+                "ts": "sha256:87888f7c0d7b23ddad604d103a70eb93",
+                "py": "sha256:87888f7c0d7b23ddad604d103a70eb93"
+            },
+            "agrees": true,
+            "notes": "Agrees, and it is worth knowing WHY rather than being relieved: PHP passes JSON_UNESCAPED_UNICODE, JS emits raw UTF-8, and Python is configured ensure_ascii=False. Three deliberate choices that happen to line up. Drop any one of them and this row goes red — which is the point of pinning it."
+        },
+        {
+            "id": "dig-0005",
+            "title": "forward slashes in the description",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "a/b/c",
+                "inputSchema": {
+                    "type": "object"
+                }
+            },
+            "digest": {
+                "php": "sha256:677c7ab5fe35a1605fc743241414c74c",
+                "ts": "sha256:677c7ab5fe35a1605fc743241414c74c",
+                "py": "sha256:677c7ab5fe35a1605fc743241414c74c"
+            },
+            "agrees": true,
+            "notes": "PHP escapes `/` as `\\/` by default and the reference passes JSON_UNESCAPED_SLASHES to stop it. Nothing in the ports needed a flag, so this row exists to catch that flag being dropped — a URL in a tool description is completely ordinary."
+        },
+        {
+            "id": "dig-0006",
+            "title": "schema keys arriving out of order",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "d",
+                "inputSchema": {
+                    "b": 1,
+                    "a": 2
+                }
+            },
+            "digest": {
+                "php": "sha256:e8e8324b5af6e5d06575b2589571c607",
+                "ts": "sha256:e8e8324b5af6e5d06575b2589571c607",
+                "py": "sha256:e8e8324b5af6e5d06575b2589571c607"
+            },
+            "agrees": true,
+            "notes": "A server reordering its JSON must not read as a rewritten tool, or every pin churns on a server restart and operators learn to remove them."
+        },
+        {
+            "id": "dig-0007",
+            "title": "no description at all",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "inputSchema": {
+                    "type": "object"
+                }
+            },
+            "digest": {
+                "php": "sha256:b307149b6e3ba50d5ba58ef8329e2d16",
+                "ts": "sha256:b307149b6e3ba50d5ba58ef8329e2d16",
+                "py": "sha256:b307149b6e3ba50d5ba58ef8329e2d16"
+            },
+            "agrees": true,
+            "material": {
+                "all": "{\"description\":\"\",\"inputSchema\":{\"type\":\"object\"},\"name\":\"search\",\"title\":null}"
+            },
+            "notes": "A SECOND, independent cause, which is why it is its own row: the reference coerced an absent description to the empty string — deliberately, so a terse server stays callable — and both ports kept `null`. Neither was obviously wrong; they simply had to agree, because a digest is only useful if it is the same digest. CLOSED 2026-09-04 by the PORTS adopting `\"\"`, the opposite direction from dig-0002 and dig-0003, because each half was judged on its merits rather than by a blanket rule about which side wins. Any pin for a description-less tool computed against a port before this change is now invalid."
+        },
+        {
+            "id": "dig-0008",
+            "title": "a title alongside the description",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "title": "Search",
+                "description": "d",
+                "inputSchema": {
+                    "type": "object"
+                }
+            },
+            "digest": {
+                "php": "sha256:25be9bda3942f8bcaa359439151a790a",
+                "ts": "sha256:25be9bda3942f8bcaa359439151a790a",
+                "py": "sha256:25be9bda3942f8bcaa359439151a790a"
+            },
+            "agrees": true,
+            "notes": "Title is IN the material in all three. It reaches the model, so a server that swaps it has rewritten the tool as far as the model is concerned."
+        },
+        {
+            "id": "dig-0009",
+            "title": "annotations present, and deliberately not digested",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "d",
+                "inputSchema": {
+                    "type": "object"
+                },
+                "annotations": {
+                    "readOnlyHint": true
+                }
+            },
+            "digest": {
+                "php": "sha256:b00347f077a66194cea2aea1f2c70209",
+                "ts": "sha256:b00347f077a66194cea2aea1f2c70209",
+                "py": "sha256:b00347f077a66194cea2aea1f2c70209"
+            },
+            "agrees": true,
+            "notes": "Pins an EXCLUSION, which is the kind of thing that silently regresses. Annotations are hints the MCP spec itself tells clients to distrust — an untrusted server can claim readOnlyHint and delete your files — so digesting them would create churn and buy nothing. This row must equal dig-0001's material plus nothing; if a future change starts folding annotations in, it goes red."
+        },
+        {
+            "id": "dig-0010",
+            "title": "deep nesting, sorted recursively",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "d",
+                "inputSchema": {
+                    "nested": {
+                        "z": 1,
+                        "a": {
+                            "y": 2,
+                            "b": 3
+                        }
+                    }
+                }
+            },
+            "digest": {
+                "php": "sha256:05baf85b19f10aac7a437493052c4eb9",
+                "ts": "sha256:05baf85b19f10aac7a437493052c4eb9",
+                "py": "sha256:05baf85b19f10aac7a437493052c4eb9"
+            },
+            "agrees": true,
+            "notes": "A one-level sort passes dig-0006 and fails here. Real JSON Schema nests several levels deep, so a shallow sort would look correct against a simple fixture and drift on anything real."
+        },
+        {
+            "id": "dig-0011",
+            "title": "an input schema present and explicitly empty",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "Search the docs",
+                "inputSchema": {}
+            },
+            "digest": {
+                "php": "sha256:0d329c5f18ee07b4b8575177e811d257",
+                "ts": "sha256:0d329c5f18ee07b4b8575177e811d257",
+                "py": "sha256:0d329c5f18ee07b4b8575177e811d257"
+            },
+            "agrees": true,
+            "notes": "`{}` sent explicitly, where dig-0002 omits the field entirely. Two routes to the same tool — one defaulted by the client, one arriving from the wire — and they must not digest differently, or an operator's pin breaks the day a server starts emitting a field it used to leave out. Nothing errors when that happens; the tool is simply refused. The digest here EQUALS dig-0002's and all three runners assert that equality rather than leaving it to be noticed."
+        },
+        {
+            "id": "dig-0012",
+            "title": "an empty REQUIRED list beside an empty properties map",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "d",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            "digest": {
+                "php": "sha256:40f2d42392dd7c3988b43d931e58aa7e",
+                "ts": "sha256:40f2d42392dd7c3988b43d931e58aa7e",
+                "py": "sha256:40f2d42392dd7c3988b43d931e58aa7e"
+            },
+            "agrees": true,
+            "notes": "The over-reach guard, and the reason the reference was NOT fixed by promoting every empty array to an object. `properties` is a map and `required` is a list, and this row carries both empty in the same schema: a rule that could not tell them apart would render `\"required\":[]` as `{}` and break agreement in the opposite direction, on a shape far more ordinary than an empty properties map. A fix must be checked for what it must not change — same argument as adm-0009 and adm-0010 in human-plus-tool-admission."
+        },
+        {
+            "id": "dig-0013",
+            "title": "an empty schema nested as a property, where no key rule reaches it",
+            "since": "0.1.0",
+            "payload": {
+                "name": "search",
+                "description": "d",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "anything": {}
+                    }
+                }
+            },
+            "digest": {
+                "php": "sha256:cd3a6a6ce4c185dd7f5e8697e9866543",
+                "ts": "sha256:cd3a6a6ce4c185dd7f5e8697e9866543",
+                "py": "sha256:cd3a6a6ce4c185dd7f5e8697e9866543"
+            },
+            "agrees": true,
+            "notes": "An empty map that is neither the input schema nor `properties`, so no rule written over KNOWN map-typed keys reaches it. `{}` as a property schema means 'any value' and is perfectly legal JSON Schema. The row exists because a reference fix that enumerated a schema's map-typed keys would pass dig-0002, dig-0003 and dig-0011 and fail here: the material a digest covers is arbitrary JSON, so the container type has to be PRESERVED rather than inferred. It also pins the consumer half — a property declared `{}` must still be offered to the model as a parameter, which is asserted in the reference's own suite."
+        }
+    ]
+}

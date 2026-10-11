@@ -25,10 +25,13 @@ from prism_mcp import (
     allow_all,
 )
 
+from .http import LoopbackHttpTransport
+
 __all__ = [
     "ErrorCode",
     "InMemoryTransport",
     "JsonObject",
+    "LoopbackHttpTransport",
     "McpError",
     "MirroredParameters",
     "ResultGuard",
@@ -158,6 +161,7 @@ class Server:
             verdict = await verdict
         if not verdict:
             raise McpError(ErrorCode.TOOL_DENIED, "The gate refused this tool call.")
+        self._assert_open()
         try:
             result = tool.handler(args, {"server": self._server, "tool": name, "headers": headers})
             if inspect.isawaitable(result):

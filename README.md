@@ -1,8 +1,8 @@
 # prism-ai-mcp-server
 
-Phase 1: stateless MCP tool registration and dispatch over a consumer-supplied
-`ServerTransport`, with an in-memory implementation. Python 3.10+, typed module
-`prism_mcp_server`. No HTTP listener, sockets, stdio, handshake, sessions, push,
+Stateless MCP tool registration and dispatch over a consumer-supplied
+`ServerTransport`, with in-memory and authenticated loopback HTTP implementations.
+Python 3.10+, typed module `prism_mcp_server`. No stdio, handshake, sessions, push,
 resources or prompts.
 
 The sole runtime dependency is `prism-ai-mcp`; there are **zero third-party
@@ -51,6 +51,10 @@ does not apply inbound. Default outbound `ResultGuard` caps UTF-8 text at 64 KiB
 for both success and `is_error` results, without provenance framing; clients
 apply that framing once. Custom guards can intentionally transform text.
 
+Server gates may return a boolean or an awaitable boolean. The asynchronous
+server awaits the verdict before permitting execution; `async def` returning
+`False` refuses the call. The sibling Python client's synchronous API is unchanged.
+
 Only `Mcp-Param-*` headers reach handlers. The prefix is required and stripped
 case-insensitively; context keys are lowercase. Raw `Authorization`, `Cookie`,
 `Origin` and other unnamespaced headers stay private. Shared
@@ -73,10 +77,53 @@ In-memory `listen()` returns a `memory://` identifier and `token: None`, not HTT
 credentials or a dialable URL. Requests have no fixed timeout. `close()` releases
 pending request waiters, rejects further requests and is idempotent. Cancellation
 of handler-owned work is best-effort; an embedder must clean up application work
-that suppresses cancellation. Phase 2 adds secure loopback HTTP transport;
-phase 3 adds SDK conformance and consumer acceptance tests.
+that suppresses cancellation. SDK conformance and consumer acceptance remain phase 3.
 
-Local setup: create a virtual environment, install `-e ../prism-mcp-py` and
-`-e .[dev]`. Gates: `python -m pytest`, `python -m mypy --strict src tests`,
+For HTTP, replace the transport with `LoopbackHttpTransport()`:
+
+```python
+from prism_mcp_server import LoopbackHttpTransport, Server
+
+transport = LoopbackHttpTransport()
+server = Server("example", transport)
+# Register application tools. Inside your event loop:
+# endpoint = await server.listen()
+# Give endpoint["url"] and endpoint["token"] privately to the client.
+# Each POST needs Authorization: Bearer <token> and Content-Type: application/json.
+# Send JSON-RPC 2.0 with id, method and the per-request params["_meta"] above.
+# await server.close() when the embedder shuts down.
+```
+
+The HTTP URL is `http://127.0.0.1:<port>/mcp`. `port` defaults to `0` (an OS-chosen
+port); the bind address is fixed to literal `127.0.0.1`. `token` is generated at
+startup with `secrets.token_hex(32)`, or may be supplied as a keyword argument.
+Configured tokens must be non-empty bearer-token strings; whitespace is refused
+before listening. HTTP always returns a real token; only memory returns `None`.
+The URL alone does not authorize a client. Keep the token out of URLs and logs.
+Every request requires `Authorization: Bearer <token>`; comparison uses fixed-size
+SHA-256 digests and `hmac.compare_digest`.
+
+Requests without `Origin` may proceed with valid credentials. A browser `Origin`
+must exactly match the listener's own origin by default. `allowed_origins` replaces
+that allow-list with explicit `http://127.0.0.1:<port>` / `https://[::1]:<port>`
+origins (either scheme is supported); arbitrary hostnames, paths, wildcard origins
+and non-loopback addresses are refused at startup. No browser CORS/preflight
+support is provided. GET, upgrades, CONNECT and SSE-only requests are refused;
+an Accept header offering both JSON and SSE receives JSON.
+
+POSTs require `Content-Length` and JSON content; chunked uploads, batches,
+notifications and ambiguous duplicate headers are refused. `max_request_bytes`
+defaults to 1 MiB. Responses carry the same request id and either `result` or a
+JSON-RPC `error` with the shared Prism category in `error.data.code`; arbitrary
+diagnostic messages are withheld. HTTP refusal uses 401 for credentials and 403
+for Origin. There is no fixed request or socket timeout. The stdlib HTTP listener
+uses daemon threads for HTTP I/O; registered handlers run on the calling asyncio
+loop. `close()` releases every socket, including incomplete headers and held
+long-polls, before resolving. Application cancellation remains best-effort.
+
+Local setup: create a virtual environment and install `-e .[dev]` against the
+published sibling dependency. Gates: `python -m pytest`, `python -m mypy --strict src tests`,
 `python -m ruff check .`, `python -m ruff format --check .`.
 No remote, publishing workflow or tag is configured here.
+The complete suite includes a real 310-second HTTP long-poll and takes about
+six minutes. SDK reference-client conformance is not part of this phase.

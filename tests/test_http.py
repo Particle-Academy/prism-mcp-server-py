@@ -50,6 +50,7 @@ def _send(
     body: Any = None,
     method: str = "POST",
     timeout: float | None = 3,
+    response_headers: dict[str, str] | None = None,
 ) -> tuple[int, JsonObject]:
     parsed = urlsplit(url)
     connection = http.client.HTTPConnection(parsed.hostname or "", parsed.port, timeout=timeout)
@@ -67,6 +68,8 @@ def _send(
                 connection.putheader(name, item)
         connection.endheaders(data)
         response = connection.getresponse()
+        if response_headers is not None:
+            response_headers.update((key.lower(), value) for key, value in response.getheaders())
         payload: JsonObject = json.loads(response.read())
         return response.status, payload
     finally:
@@ -86,6 +89,125 @@ async def send(
 
 def run(scenario: Callable[[], Awaitable[None]]) -> None:
     asyncio.run(asyncio.wait_for(scenario(), 15))
+
+
+@pytest.mark.parametrize("method", ["tools/list", "tools/call"])
+def test_serves_without_client_info_over_http_while_preserving_security_checks(method: str) -> None:
+    async def scenario() -> None:
+        server, _transport, url, token = await setup()
+        called: list[str] = []
+
+        def handler(_args: JsonObject, _context: ToolContext) -> ToolResult:
+            called.append("handler")
+            return ToolResult("served")
+
+        server.register(ToolDefinition("echo", "", {}), handler)
+        body = rpc(method, {"name": "echo"} if method == "tools/call" else {})
+        meta = body["params"]["_meta"]
+        del meta["io.modelcontextprotocol/clientInfo"]
+        try:
+            different = ("b" if token[0] == "a" else "a") + token[1:]
+            for candidate in (None, "", different):
+                assert (await send(url, candidate, body=body))[0] == 401
+            assert (await send(url, token, {"Origin": "https://attacker.example"}, body))[0] == 403
+            for version in (None, "wrong", "2025-11-25"):
+                if version is None:
+                    del meta["io.modelcontextprotocol/protocolVersion"]
+                else:
+                    meta["io.modelcontextprotocol/protocolVersion"] = version
+                reply = (await send(url, token, body=body))[1]
+                assert reply["error"]["data"]["code"] == "unsupported_protocol_version"
+            meta["io.modelcontextprotocol/protocolVersion"] = LATEST_PROTOCOL_VERSION
+            del meta["io.modelcontextprotocol/clientCapabilities"]
+            reply = (await send(url, token, body=body))[1]
+            assert reply["error"]["data"]["code"] == "protocol_failure"
+            meta["io.modelcontextprotocol/clientCapabilities"] = {}
+            assert called == []
+            status, reply = await send(url, token, {"Origin": url.removesuffix("/mcp")}, body)
+            assert status == 200
+            identity = {
+                "io.modelcontextprotocol/serverInfo": {
+                    "name": "prism-ai-mcp-server",
+                    "version": "0.1.0",
+                }
+            }
+            assert reply["result"]["_meta"] == identity
+            assert reply["result"]["resultType"] == "complete"
+            if method == "tools/list":
+                assert len(reply["result"]["tools"]) == 1
+            else:
+                assert reply["result"]["content"] == [{"type": "text", "text": "served"}]
+                assert called == ["handler"]
+        finally:
+            await server.close()
+
+    run(scenario)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        None,
+        {},
+        {"name": "ignored"},
+        {"_meta": {}},
+        {"_meta": {"io.modelcontextprotocol/protocolVersion": "2025-11-25"}},
+        {"_meta": {"io.modelcontextprotocol/protocolVersion": "unknown"}},
+        {"_meta": {"io.modelcontextprotocol/protocolVersion": LATEST_PROTOCOL_VERSION}},
+    ],
+    ids=[
+        "no params",
+        "empty params",
+        "no _meta",
+        "empty _meta",
+        "older version",
+        "unknown version",
+        "no capabilities",
+    ],
+)
+def test_answers_http_discovery_before_negotiation_with_bearer_and_origin(
+    params: JsonObject | None,
+) -> None:
+    async def scenario() -> None:
+        server, _transport, url, token = await setup()
+        body = {
+            "jsonrpc": "2.0",
+            "id": "probe",
+            "method": "server/discover",
+            **({"params": params} if params is not None else {}),
+        }
+        try:
+            different = ("b" if token[0] == "a" else "a") + token[1:]
+            for candidate in (None, "", "wrong", different):
+                assert (await send(url, candidate, body=body))[0] == 401
+            assert (await send(url, token, {"Origin": "https://attacker.example"}, body))[0] == 403
+            headers: dict[str, str] = {}
+            status, reply = await asyncio.to_thread(
+                _send, url, token, {"Origin": url.removesuffix("/mcp")}, body, "POST", 3, headers
+            )
+            assert status == 200
+            assert "mcp-session-id" not in headers
+            assert reply == {
+                "jsonrpc": "2.0",
+                "id": "probe",
+                "result": {
+                    "resultType": "complete",
+                    "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}},
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                    "_meta": {
+                        "io.modelcontextprotocol/serverInfo": {
+                            "name": "prism-ai-mcp-server",
+                            "version": "0.1.0",
+                        }
+                    },
+                },
+            }
+        finally:
+            await server.close()
+
+    run(scenario)
 
 
 def test_literal_loopback_bind_is_unreachable_on_non_loopback_ipv4() -> None:
@@ -470,11 +592,26 @@ def test_close_releases_held_polls_even_with_suppressed_cancellation_and_release
             await asyncio.wait_for(started.wait(), 3)
             port = urlsplit(url).port
             assert port is not None
-            idle = socket.create_connection(("127.0.0.1", port), timeout=2)
-            idle.sendall(b"POST /mcp HTTP/1.1\r\n")
+            accepted = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            original = _HttpServer.get_request
+
+            def capture(listener: _HttpServer) -> tuple[socket.socket, Any]:
+                connection, address = original(listener)
+                loop.call_soon_threadsafe(accepted.set)
+                return connection, address
+
+            # The incomplete request must already belong to the transport when
+            # close takes its socket snapshot; connecting alone does not prove it.
+            with patch.object(_HttpServer, "get_request", capture):
+                idle = socket.create_connection(("127.0.0.1", port), timeout=1)
+                idle.sendall(b"POST /mcp HTTP/1.1\r\n")
+                await asyncio.wait_for(accepted.wait(), 2)
             await asyncio.wait_for(asyncio.gather(server.close(), transport.close()), 2)
-            with pytest.raises(OSError):
-                await pending
+            # TimeoutError is an OSError, so that broad assertion could falsely
+            # credit the client's deadline as server-initiated socket cleanup.
+            with pytest.raises((ConnectionError, http.client.RemoteDisconnected)):
+                await asyncio.wait_for(pending, 1)
             try:
                 assert await asyncio.to_thread(idle.recv, 1) == b""
             except ConnectionResetError:

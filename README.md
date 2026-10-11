@@ -63,12 +63,21 @@ before the gate. Conflicting body/header values, ambiguous headers and invalid
 primitive encodings are refused. Integers use the shared JS-safe range for
 cross-language agreement. Other application argument validation belongs to handlers.
 
-Every request requires `params['_meta']` with
+`tools/list` and `tools/call` require `params['_meta']` with
 `io.modelcontextprotocol/protocolVersion: '2026-07-28'`,
-`io.modelcontextprotocol/clientCapabilities: {}` and
-`io.modelcontextprotocol/clientInfo: {name: 'example', version: '1'}`.
+`io.modelcontextprotocol/clientCapabilities: {}`.
+`io.modelcontextprotocol/clientInfo: {name: 'example', version: '1'}` is optional.
 Older revisions raise shared `unsupported_protocol_version`, naming both
-revisions. Only `tools/list` and `tools/call` are supported. Wire results are
+revisions. `server/discover`, `tools/list` and `tools/call` are supported.
+Discovery advertises `supportedVersions: ['2026-07-28']` and `capabilities: {tools: {}}`
+regardless of the probe's requested version, including absent, older or unknown
+versions. The probe needs no `params`, `_meta`, capabilities or client identity,
+creates no session, and does not change server state. It uses the same
+HTTP bearer and Origin checks as tool requests. Every successful result includes
+`resultType: 'complete'` and `_meta['io.modelcontextprotocol/serverInfo']` identifying
+the serving software as `{name: 'prism-ai-mcp-server', version: '0.1.0'}`.
+Discovery and tool lists include `ttlMs: 0, cacheScope: 'private'`; callers re-fetch
+to observe registration changes. Tool call results also carry
 `{content: [{type: 'text', text: ...}], isError: ...}`; failures raise shared
 `McpError` for transport mapping. Arbitrary handler diagnostic messages are
 excluded; a shared error category is retained.

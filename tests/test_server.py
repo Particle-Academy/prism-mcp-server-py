@@ -36,6 +36,12 @@ from prism_mcp_server import (
 VERSION = "io.modelcontextprotocol/protocolVersion"
 CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+RESULT_META = {
+    "resultType": "complete",
+    "_meta": {
+        "io.modelcontextprotocol/serverInfo": {"name": "prism-ai-mcp-server", "version": "0.1.0"}
+    },
+}
 CORPUS: JsonObject = json.loads(
     (Path(__file__).parent / "fixtures" / "mcp-tool-digest.json").read_text(encoding="utf-8")
 )
@@ -126,7 +132,11 @@ def test_registration_and_list_replies_are_snapshots() -> None:
                     "Mcp-Param-region": "east",
                 },
             )
-        ) == {"content": [{"type": "text", "text": '{"region":"east"}'}], "isError": False}
+        ) == {
+            "content": [{"type": "text", "text": '{"region":"east"}'}],
+            "isError": False,
+            **RESULT_META,
+        }
         await server.close()
 
     asyncio.run(scenario())
@@ -141,6 +151,7 @@ def test_duplicate_registration_does_not_replace_a_handler() -> None:
         assert await transport.request(request("tools/call", {"name": "echo"})) == {
             "content": [{"type": "text", "text": "original"}],
             "isError": False,
+            **RESULT_META,
         }
         await server.close()
 
@@ -287,6 +298,7 @@ def test_nested_primitives_resolve_before_gate_without_mutating_the_caller() -> 
                 }
             ],
             "isError": False,
+            **RESULT_META,
         }
         await server.close()
 
@@ -425,6 +437,7 @@ def test_async_gate_is_awaited_before_execution(verdict: bool) -> None:
                 assert await transport.request(request("tools/call", {"name": "echo"})) == {
                     "content": [{"type": "text", "text": "approved"}],
                     "isError": False,
+                    **RESULT_META,
                 }
                 assert called == ["gate body", "handler"]
             else:
@@ -508,6 +521,7 @@ def test_result_guard_counts_utf8_bytes() -> None:
         ) == {
             "content": [{"type": "text", "text": "😀"}],
             "isError": False,
+            **RESULT_META,
         }
         with pytest.raises(McpError) as error:
             await transport.request(
@@ -602,6 +616,7 @@ def test_long_poll_survives_a_virtual_ten_minutes_and_completes() -> None:
             assert await pending == {
                 "content": [{"type": "text", "text": "long-poll-complete"}],
                 "isError": False,
+                **RESULT_META,
             }
         await server.close()
 

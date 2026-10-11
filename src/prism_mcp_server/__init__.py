@@ -76,6 +76,7 @@ class ServerTransport(Protocol):
 _VERSION = "io.modelcontextprotocol/protocolVersion"
 _CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 _CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
+_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 _PREFIX = "mcp-param-"
 
 
@@ -128,14 +129,31 @@ class Server:
 
     async def handle(self, request: TransportRequest) -> Any:
         self._assert_open()
+        # Discovery precedes version selection, so no agreed-revision metadata
+        # can be required here. HTTP bearer/Origin checks stay in the transport.
+        if request.method == "server/discover":
+            return _complete(
+                {
+                    "supportedVersions": [LATEST_PROTOCOL_VERSION],
+                    "capabilities": {"tools": {}},
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                }
+            )
         params = request.params if request.params is not None else {}
         _assert_protocol(params)
         if request.method == "tools/list":
-            return {"tools": [_payload_of(tool.definition) for tool in self._tools.values()]}
+            return _complete(
+                {
+                    "tools": [_payload_of(tool.definition) for tool in self._tools.values()],
+                    "ttlMs": 0,
+                    "cacheScope": "private",
+                }
+            )
         if request.method != "tools/call":
             raise McpError(
                 ErrorCode.PROTOCOL_FAILURE,
-                "Only tools/list and tools/call are supported; no initialize handshake.",
+                "Only server/discover, tools/list and tools/call are supported; no initialize handshake.",
             )
         name = params.get("name")
         if not isinstance(name, str) or not name:
@@ -177,7 +195,7 @@ class Server:
         ):
             raise McpError(ErrorCode.PROTOCOL_FAILURE, "The handler must return ToolResult.")
         text = self._guard.guard(self._server, name, result.text)
-        return {"content": [{"type": "text", "text": text}], "isError": result.is_error}
+        return _complete({"content": [{"type": "text", "text": text}], "isError": result.is_error})
 
     def _assert_open(self) -> None:
         if self._closed:
@@ -196,13 +214,23 @@ def _assert_protocol(params: JsonObject) -> None:
             ErrorCode.UNSUPPORTED_PROTOCOL_VERSION,
             f"Protocol {kind} [{value}] is unsupported; expected [{LATEST_PROTOCOL_VERSION}].",
         )
-    if not isinstance(meta.get(_CAPABILITIES), dict) or not isinstance(
-        meta.get(_CLIENT_INFO), dict
-    ):
+    if not isinstance(meta.get(_CAPABILITIES), dict):
         raise McpError(
             ErrorCode.PROTOCOL_FAILURE,
-            "Requests require client capabilities and client info in _meta.",
+            "Requests require client capabilities in _meta.",
         )
+    if _CLIENT_INFO in meta and not isinstance(meta[_CLIENT_INFO], dict):
+        raise McpError(ErrorCode.PROTOCOL_FAILURE, "Client info must be an object when supplied.")
+
+
+def _complete(result: JsonObject) -> JsonObject:
+    # Identify the serving software independently of the gate/context label.
+    # Fresh objects keep caller mutation from affecting subsequent responses.
+    return {
+        **result,
+        "resultType": "complete",
+        "_meta": {_SERVER_INFO: {"name": "prism-ai-mcp-server", "version": "0.1.0"}},
+    }
 
 
 def _clone_object(value: JsonObject) -> JsonObject:

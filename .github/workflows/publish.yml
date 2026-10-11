@@ -1,0 +1,292 @@
+name: Publish
+
+# Named `publish.yml` to match every other package in the estate, and the
+# FILENAME is load-bearing: a PyPI Trusted Publisher binds to a repository plus a
+# workflow filename, so renaming this file breaks publishing until the entry on
+# pypi.org is updated to match. It is not a cosmetic name.
+
+# Publishing is a tag push, and nothing else. There is no manual dispatch and no
+# "publish from a branch" path, because both of those let a release exist that no
+# commit in this repository claims.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Guard the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Run again at publish time, not only when the commit landed: a dependency
+      # that has since gone unmaintained, or an approval since withdrawn from the
+      # allowlist, should stop the release.
+      - name: Fetch the third-party allowlist
+        uses: actions/checkout@v4
+        with:
+          repository: Particle-Academy/.github
+          path: .third-party-allowlist
+          persist-credentials: false
+
+      - name: Third-party dependency allowlist
+        run: |
+          node .third-party-allowlist/third-party/check.mjs --repo .
+          node -e "require('node:fs').rmSync('.third-party-allowlist',{recursive:true,force:true})"
+
+      - uses: actions/setup-python@v5
+        with:
+          # tomllib is stdlib from 3.11. The package floor is 3.10, but this job
+          # reads a file rather than exercising the package, so it may use a
+          # newer interpreter than the package supports.
+          python-version: "3.12"
+
+      # A tag is a human action and pyproject.toml is a file; nothing keeps the
+      # two in step. Publishing v0.2.0 from a tree that declares 0.1.0 puts a
+      # version on PyPI that no commit here claims -- and PyPI is append-only,
+      # so it cannot be taken back, only yanked.
+      - name: Tag must match the declared version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declared="$(python -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          echo "tag=${tag}  pyproject=${declared}"
+          if [ "${tag}" != "${declared}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} means ${tag}, but pyproject.toml declares ${declared}. Fix one of them."
+            exit 1
+          fi
+
+      # The annotation IS the release notes, and the GitHub release is only created
+      # after the upload. So a lightweight tag is refused HERE, before anything is
+      # built: by the time the release job could notice, the version is on PyPI
+      # and cannot be taken back.
+      - name: Tag must be annotated
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}" --jq '.object.type')"
+          if [ "${tag_type}" != "tag" ]; then
+            echo "::error::${GITHUB_REF_NAME} is a lightweight tag, so it carries no release notes. Tag with 'git tag -a' -- the message IS the release notes. Nothing has been published."
+            exit 1
+          fi
+
+      # The tests ran when this commit landed on main. Establishing THAT before
+      # publishing is the whole point: a release that assumes green is the
+      # failure mode this ecosystem keeps finding in its own work.
+      #
+      # Asked of the tests.yml workflow directly rather than by filtering a run
+      # list by display name -- a workflow can be renamed, a filename is the
+      # identity. All nine Python repos use tests.yml.
+      #
+      # This fails when a tag is pushed before CI finishes on the same SHA.
+      # That is deliberate -- re-run this workflow once Tests is green.
+      - name: Tests must have passed for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/tests.yml/runs?head_sha=${GITHUB_SHA}&status=success" --jq '.total_count')"
+          echo "Successful Tests runs for ${GITHUB_SHA}: ${count}"
+          if [ "${count}" -lt 1 ]; then
+            echo "::error::No successful Tests run for ${GITHUB_SHA}. Refusing to publish."
+            exit 1
+          fi
+
+  # Build and publish are separate jobs so `id-token: write` is never held by the
+  # job that runs build code. `python -m build` installs the build backend from
+  # PyPI; anything it runs could otherwise mint the token that publishes.
+
+      # The annotation IS the changelog. These packages ship no CHANGELOG file,
+      # and the release job reads the tag's message and publishes it verbatim, so
+      # the one question a consumer most needs answered has to be in it. It
+      # usually was not: of the twenty most recent annotations across ten of these
+      # repositories, EIGHTEEN never used the word "breaking" at all. One shipped
+      # a mandatory migration, a changed matching rule and a raised framework
+      # floor under headings that labelled none of them breaking.
+      #
+      # So this asks, and like the lightweight-tag refusal it treats silence as
+      # invalid rather than as "no". tools/check-release-notes.sh documents the
+      # accepted forms, why prose mentioning "breaking" is not one of them, and
+      # why a '#' heading needs --cleanup=verbatim to survive being written.
+      #
+      # The annotation is read from the API because actions/checkout creates a
+      # LIGHTWEIGHT local tag, so reading the message from the checkout yields the
+      # COMMIT message instead -- plausibly, and without error.
+      #
+      # This job runs BEFORE the upload, so refusing here genuinely prevents
+      # publication -- unlike the Composer packages in this ecosystem, where
+      # Packagist has the version the moment the tag is pushed and their guard
+      # can only withhold the GitHub release.
+      - name: Release notes must declare their breaking status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG_TYPE="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}" --jq '.object.type')"
+
+          if [ "${TAG_TYPE}" != "tag" ]; then
+            echo "::error::${GITHUB_REF_NAME} is a lightweight tag, so it carries no notes. Tag with 'git tag -a' -- the message IS the release notes."
+            exit 1
+          fi
+
+          TAG_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}" --jq '.object.sha')"
+          gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_SHA}" --jq '.message' > "${RUNNER_TEMP}/release-notes.md"
+
+          sh tools/check-release-notes.sh "${RUNNER_TEMP}/release-notes.md"
+
+  build:
+    name: Build and check the distributions
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      # Catches a malformed README or metadata before PyPI rejects the upload.
+      # Discovering it after the tag exists means cutting a new version for a
+      # typo, because a version number cannot be reused.
+      - name: Check the artifacts
+        run: |
+          python -m pip install --upgrade twine
+          python -m twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dists
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Requires a PyPI trusted publisher pointing at THIS repo, THIS workflow
+    # filename, and the `pypi` environment. See RELEASING.md -- until that is
+    # configured on PyPI, this job fails and publishes nothing.
+    environment:
+      name: pypi
+      # The PyPI project name, which is NOT the repository name.
+      url: https://pypi.org/p/prism-ai-mcp-server
+    permissions:
+      # OIDC. This is what replaces a stored API token: there is no long-lived
+      # PyPI credential in this repository's secrets to leak, rotate, or exfiltrate.
+      id-token: write
+    steps:
+      # No checkout. This job uploads exactly the files the build job checked.
+      - uses: actions/download-artifact@v4
+        with:
+          name: dists
+          path: dist/
+
+      # Pinned by SHA, not by tag: a mutable reference in the one step holding
+      # the publishing token is what the April 2026 supply-chain compromises
+      # exploited. v1.14.2. No `password:`, and attestations are on by default,
+      # so PyPI records which repository and workflow published each file.
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
+
+  release:
+    name: Create the GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # No checkout: this job only talks to the GitHub API, so the one job holding
+      # a write token has no working tree and no git credentials in it.
+      #
+      # The annotation is read from the API. Three other mechanisms were tried in
+      # the PHP packages and all three silently published the wrong text:
+      # --generate-notes substituted commit subjects, and --notes-from-tag and
+      # `git tag -l %(contents)` both substituted the last commit message, because
+      # actions/checkout creates a LIGHTWEIGHT local tag.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists; leaving it alone."
+            exit 0
+          fi
+
+          TAG_TYPE="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}" --jq '.object.type')"
+
+          if [ "${TAG_TYPE}" != "tag" ]; then
+            echo "::error::${GITHUB_REF_NAME} is a lightweight tag, so it carries no notes. Tag with 'git tag -a' -- the message IS the release notes."
+            exit 1
+          fi
+
+          TAG_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${GITHUB_REF_NAME}" --jq '.object.sha')"
+          gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_SHA}" --jq '.message' > "${RUNNER_TEMP}/release-notes.md"
+
+          if [ ! -s "${RUNNER_TEMP}/release-notes.md" ]; then
+            echo "::error::${GITHUB_REF_NAME} has an empty annotation."
+            exit 1
+          fi
+
+          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/release-notes.md" --verify-tag
+
+  distribution:
+    name: Verify it is installable
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A tag is not a release and an upload is not a distribution: the publish
+      # step succeeding means PyPI accepted a file, not that a consumer can
+      # install it. PyPI serves its index through a CDN, so this polls rather
+      # than checking once, and says what to DO when the version never appears.
+      #
+      # --only-binary so nothing fetched is BUILT: resolving an sdist runs its
+      # build backend, which would be code from the index executing here.
+      # --no-cache-dir so pip's own cache cannot answer for PyPI.
+      - name: PyPI must serve this version
+        run: |
+          pkg="$(python -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["name"])')"
+          want="${GITHUB_REF_NAME#v}"
+          echo "Waiting for ${pkg}==${want} on PyPI."
+
+          for attempt in $(seq 1 30); do
+            if python -m pip download --no-deps --no-cache-dir --only-binary=:all: --dest "${RUNNER_TEMP}/pypi-check" "${pkg}==${want}" >/dev/null 2>&1; then
+              echo "${pkg}==${want} is installable."
+              exit 0
+            fi
+            echo "  attempt ${attempt}: not served yet."
+            sleep 30
+          done
+
+          echo "::error::${pkg}==${want} never appeared on PyPI. Check the publish job, and that the PyPI trusted publisher names this repository, publish.yml and the pypi environment."
+          exit 1

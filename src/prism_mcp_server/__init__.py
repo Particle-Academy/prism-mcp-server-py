@@ -173,10 +173,19 @@ class Server:
         headers = _mirrored_headers(request.headers)
         _resolve_mirrors(tool.mirrored, headers, args)
         verdict = self._gate(self._server, name, args)
-        # Serving is asynchronous in both languages; gates may be sync or async.
-        # The sibling Python client's synchronous API remains unchanged.
+        # Serving is asynchronous in both languages; gates may be sync or async,
+        # as they may in the sibling client since prism-ai-mcp 0.2.1.
         if inspect.isawaitable(verdict):
             verdict = await verdict
+        # A gate that delegates and forgets an inner await resolves to another
+        # awaitable, which is truthy. Refused rather than read as consent (G-83).
+        if inspect.isawaitable(verdict):
+            if inspect.iscoroutine(verdict):
+                verdict.close()
+            raise TypeError(
+                f"The gate must resolve to a verdict, got {type(verdict).__name__}. "
+                "Await any coroutine inside the gate before returning."
+            )
         if not verdict:
             raise McpError(ErrorCode.TOOL_DENIED, "The gate refused this tool call.")
         self._assert_open()

@@ -377,31 +377,56 @@ def test_prototype_shaped_paths_are_ordinary_dictionary_fields() -> None:
 
 
 def test_round_trip_through_the_actual_sibling_client() -> None:
-    server, transport = asyncio.run(setup())
-    tool = definition(
-        schema={"properties": {"region": {"type": "string", "x-mcp-header": "region"}}}
-    )
-    result = ToolResult("exact-text", True)
+    async def scenario() -> None:
+        server, transport = await setup()
+        tool = definition(
+            schema={"properties": {"region": {"type": "string", "x-mcp-header": "region"}}}
+        )
+        result = ToolResult("exact-text", True)
 
-    async def handler(args: JsonObject, context: ToolContext) -> ToolResult:
-        assert args == {"region": "west"}
-        assert context["headers"] == {"region": "west"}
-        return result
+        async def handler(args: JsonObject, context: ToolContext) -> ToolResult:
+            assert args == {"region": "west"}
+            assert context["headers"] == {"region": "west"}
+            return result
 
-    def client_transport(raw: TransportRequest) -> Any:
-        return asyncio.run(transport.request(request(raw.method, raw.params, raw.headers)))
+        # The client is async since prism-ai-mcp 0.2.0, so its transport awaits
+        # the server directly rather than spinning a loop per request.
+        async def client_transport(raw: TransportRequest) -> Any:
+            return await transport.request(request(raw.method, raw.params, raw.headers))
 
-    server.register(tool, handler)
-    client = Client(
-        "fixture",
-        client_transport,
-        trust=TrustPolicy.allowing_every_tool({"echo": tool.digest()}),
-        guard=ResultGuard(frame_provenance=False),
-    )
-    listed = client.list_tools()
-    assert listed[0].digest() == tool.digest()
-    assert client.call_tool(listed[0], {"region": "west"}) == result
-    asyncio.run(server.close())
+        server.register(tool, handler)
+        client = Client(
+            "fixture",
+            client_transport,
+            trust=TrustPolicy.allowing_every_tool({"echo": tool.digest()}),
+            guard=ResultGuard(frame_provenance=False),
+        )
+        listed = await client.list_tools()
+        assert listed[0].digest() == tool.digest()
+        assert await client.call_tool(listed[0], {"region": "west"}) == result
+        await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_gate_resolving_to_another_awaitable_is_refused() -> None:
+    # An async gate that delegates and forgets the inner await resolves to a
+    # second coroutine, which is truthy. Awaiting once would read that as
+    # consent: the G-83 bypass one level down.
+    async def check(*_args: Any) -> bool:
+        return False
+
+    async def gate(*args: Any) -> bool:
+        return check(*args)  # type: ignore[return-value]
+
+    async def scenario() -> None:
+        server, transport = await setup(gate=gate)
+        server.register(definition(), lambda *_args: pytest.fail("Handler must not run"))
+        with pytest.raises(TypeError, match="gate must resolve to a verdict"):
+            await transport.request(request("tools/call", {"name": "echo"}))
+        await server.close()
+
+    asyncio.run(scenario())
 
 
 def test_custom_gate_refuses_before_execution() -> None:

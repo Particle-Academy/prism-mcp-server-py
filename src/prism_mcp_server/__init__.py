@@ -145,7 +145,10 @@ class Server:
         if request.method == "tools/list":
             return _complete(
                 {
-                    "tools": [_payload_of(tool.definition) for tool in self._tools.values()],
+                    "tools": [
+                        _without_nulls(_payload_of(tool.definition))
+                        for tool in self._tools.values()
+                    ],
                     "ttlMs": 0,
                     "cacheScope": "private",
                 }
@@ -248,6 +251,17 @@ def _clone_object(value: JsonObject) -> JsonObject:
         return result
     except (TypeError, ValueError, RecursionError):
         raise McpError(ErrorCode.PROTOCOL_FAILURE, "Expected JSON-serializable data.") from None
+
+
+def _without_nulls(tool: JsonObject) -> JsonObject:
+    """A tools/list entry with its null fields left out.
+
+    The spec types ``title`` (like every optional field) as an optional string: absent is valid, null is not.
+    Claude Code validates strictly and dropped the WHOLE server on one ``title: null`` (tynn, Genie 2,
+    2026-10-22). Pins are unaffected: ToolDefinition.from_payload() reads an absent title as None, so the
+    digest a client computes from the entry is the registered definition's.
+    """
+    return {key: value for key, value in tool.items() if value is not None}
 
 
 def _payload_of(tool: ToolDefinition) -> JsonObject:

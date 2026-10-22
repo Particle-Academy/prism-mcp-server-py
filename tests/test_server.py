@@ -680,3 +680,24 @@ def test_close_releases_long_poll_even_when_application_code_suppresses_cancella
         await asyncio.sleep(0)
 
     asyncio.run(scenario())
+
+
+# A NULL IS NOT AN OPTIONAL STRING (tynn, Genie 2, 2026-10-22). Claude Code dropped the whole server on one
+# `title: null`, so a single tool without a title hid every tool the server had.
+def test_a_tool_with_no_title_is_listed_without_one_and_its_pin_holds() -> None:
+    async def scenario() -> None:
+        server, transport = await setup()
+        untitled = ToolDefinition("plain", "No title.", {"type": "object"})
+        assert untitled.title is None
+        server.register(untitled, echo)
+        server.register(definition("titled"), echo)
+        reply = await transport.request(request())
+        tools = json.loads(json.dumps(reply["tools"]))
+        plain = next(tool for tool in tools if tool["name"] == "plain")
+        assert "title" not in plain
+        assert all(value is not None for tool in tools for value in tool.values())
+        assert next(tool for tool in tools if tool["name"] == "titled")["title"] == "Echo"
+        assert ClientToolDefinition.from_payload(plain).digest() == untitled.digest()
+        await server.close()
+
+    asyncio.run(scenario())

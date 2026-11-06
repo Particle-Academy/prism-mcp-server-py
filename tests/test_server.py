@@ -15,7 +15,13 @@ from prism_mcp import (
     Client,
 )
 from prism_mcp import (
+    ResultGuard as ClientResultGuard,
+)
+from prism_mcp import (
     ToolDefinition as ClientToolDefinition,
+)
+from prism_mcp import (
+    TrustPolicy as ClientTrustPolicy,
 )
 
 from prism_mcp_server import (
@@ -535,6 +541,102 @@ def test_default_cap_refuses_success_and_error_results_without_truncation(is_err
         await server.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("is_error", [False, True])
+def test_server_cap_is_independent_of_client_default(is_error: bool) -> None:
+    async def scenario() -> None:
+        server, transport = await setup()
+        text = "x" * 65536
+        assert (
+            ClientResultGuard(frame_provenance=False).guard("fixture", "echo", text + "x")
+            == text + "x"
+        )
+        server.register(
+            definition(), lambda args, _context: ToolResult(str(args["text"]), is_error)
+        )
+        assert await transport.request(
+            request("tools/call", {"name": "echo", "arguments": {"text": text}})
+        ) == {
+            "content": [{"type": "text", "text": text}],
+            "isError": is_error,
+            **RESULT_META,
+        }
+        with pytest.raises(McpError) as error:
+            await transport.request(
+                request("tools/call", {"name": "echo", "arguments": {"text": text + "x"}})
+            )
+        assert error.value.code == ErrorCode.RESULT_TOO_LARGE.value
+        await server.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("is_error", [False, True])
+def test_default_cap_pins_utf8_byte_boundary(is_error: bool) -> None:
+    async def scenario() -> None:
+        server, transport = await setup()
+        server.register(
+            definition(), lambda args, _context: ToolResult(str(args["text"]), is_error)
+        )
+        text = "é" * 32768
+        assert await transport.request(
+            request("tools/call", {"name": "echo", "arguments": {"text": text}})
+        ) == {
+            "content": [{"type": "text", "text": text}],
+            "isError": is_error,
+            **RESULT_META,
+        }
+        with pytest.raises(McpError) as error:
+            await transport.request(
+                request("tools/call", {"name": "echo", "arguments": {"text": text + "é"}})
+            )
+        assert error.value.code == ErrorCode.RESULT_TOO_LARGE.value
+        await server.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("is_error", [False, True])
+def test_callers_can_choose_reexported_guard_default(is_error: bool) -> None:
+    async def scenario() -> None:
+        server, transport = await setup(guard=ResultGuard(frame_provenance=False))
+        server.register(
+            definition(), lambda args, _context: ToolResult(str(args["text"]), is_error)
+        )
+        text = "x" * 262144
+        assert await transport.request(
+            request("tools/call", {"name": "echo", "arguments": {"text": text}})
+        ) == {
+            "content": [{"type": "text", "text": text}],
+            "isError": is_error,
+            **RESULT_META,
+        }
+        with pytest.raises(McpError) as error:
+            await transport.request(
+                request("tools/call", {"name": "echo", "arguments": {"text": text + "x"}})
+            )
+        assert error.value.code == ErrorCode.RESULT_TOO_LARGE.value
+        await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_reexported_guard_uses_shared_class_and_256kib_default() -> None:
+    assert ResultGuard is ClientResultGuard
+    guard = ResultGuard(frame_provenance=False)
+    assert len(guard.guard("fixture", "echo", "x" * 262144)) == 262144
+    with pytest.raises(McpError) as error:
+        guard.guard("fixture", "echo", "x" * 262145)
+    assert error.value.code == ErrorCode.RESULT_TOO_LARGE.value
+
+
+def test_reexported_trust_policy_refuses_empty_allowlist() -> None:
+    assert TrustPolicy is ClientTrustPolicy
+    with pytest.raises(McpError) as error:
+        TrustPolicy.allowing([]).admit("fixture", [])
+    assert error.value.code == ErrorCode.SERVER_NOT_TRUSTED.value
+    assert TrustPolicy.allowing_every_tool().admit("fixture", []) == []
 
 
 def test_result_guard_counts_utf8_bytes() -> None:

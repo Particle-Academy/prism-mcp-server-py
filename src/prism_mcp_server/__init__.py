@@ -98,8 +98,10 @@ class Server:
         self._server = server
         self._transport = transport
         self._gate = gate if gate is not None else allow_all
-        # Clients frame provenance; default serving caps bytes without altering text.
-        self._guard = guard if guard is not None else ResultGuard(frame_provenance=False)
+        # Keep the serving limit independent of client defaults; clients frame provenance.
+        self._guard = (
+            guard if guard is not None else ResultGuard(max_bytes=65536, frame_provenance=False)
+        )
         self._tools: dict[str, _RegisteredTool] = {}
         self._refused: set[str] = set()
         self._closed = False

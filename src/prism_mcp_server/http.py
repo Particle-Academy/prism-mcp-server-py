@@ -270,11 +270,20 @@ class _RequestHandler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError, RecursionError):
             self._send(400, _rpc_error(None, -32700))
             return
+        # A notification carries no id and gets no result; only `notifications/*`
+        # methods may omit it (the classic `notifications/initialized` does).
+        notification = (
+            isinstance(body, dict)
+            and "id" not in body
+            and isinstance(body.get("method"), str)
+            and body["method"].startswith("notifications/")
+        )
         if (
             not isinstance(body, dict)
             or body.get("jsonrpc") != "2.0"
             or not (
-                isinstance(body.get("id"), str)
+                notification
+                or isinstance(body.get("id"), str)
                 or (type(body.get("id")) in (int, float) and math.isfinite(body["id"]))
             )
             or not isinstance(body.get("method"), str)
@@ -292,6 +301,19 @@ class _RequestHandler(BaseHTTPRequestHandler):
             )
             owner._pending.add(future)
         try:
+            if notification:
+                # Streamable HTTP answers an accepted notification 202 with no body.
+                try:
+                    future.result()
+                except concurrent.futures.CancelledError:
+                    return
+                except Exception:  # noqa: BLE001 -- never return application diagnostics
+                    if not owner._closed:
+                        self._send(400, _rpc_error(None, -32600))
+                    return
+                if not owner._closed:
+                    self._send_accepted()
+                return
             try:
                 result = future.result()  # Deliberately no request deadline.
                 reply = {"jsonrpc": "2.0", "id": body["id"], "result": result}
@@ -306,6 +328,14 @@ class _RequestHandler(BaseHTTPRequestHandler):
         finally:
             with owner._lock:
                 owner._pending.discard(future)
+
+    def _send_accepted(self) -> None:
+        self.close_connection = True
+        self.send_response(202)
+        self.send_header("Content-Length", "0")
+        self.send_header("Connection", "close")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
 
     def _send(self, status: int, body: Any) -> None:
         data = json.dumps(body, ensure_ascii=True, allow_nan=False).encode("utf-8")

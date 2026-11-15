@@ -28,6 +28,7 @@ from prism_mcp import (
 from .http import LoopbackHttpTransport
 
 __all__ = [
+    "SUPPORTED_PROTOCOL_VERSIONS",
     "ErrorCode",
     "InMemoryTransport",
     "JsonObject",
@@ -78,6 +79,24 @@ _CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 _CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 _SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 _PREFIX = "mcp-param-"
+_STATELESS_KEYS = (_VERSION, _CAPABILITIES, _CLIENT_INFO)
+_SERVER_NAME = "prism-ai-mcp-server"
+_SERVER_VERSION = "0.2.0"
+
+# The handshake revisions, served for clients that open with `initialize`
+# (Codex's MCP client always does). Newest first; an unknown requested revision
+# is answered with the first, as the spec says.
+_CLASSIC_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+
+#: Every MCP protocol version this server serves, newest first: the stateless
+#: revision, then the handshake revisions. The standing rule is that the five
+#: newest official versions are always here; protocol-versions.json publishes
+#: this list for the drift watcher, and a test keeps the two identical.
+SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = (LATEST_PROTOCOL_VERSION, *_CLASSIC_VERSIONS)
+
+# Instructions are guidance for a model, not a document: bounded so one option
+# cannot become a token sink.
+_MAX_INSTRUCTIONS_BYTES = 16_384
 
 
 @dataclass(frozen=True)
@@ -94,7 +113,12 @@ class Server:
         transport: ServerTransport,
         gate: ToolGate | Callable[[str, str, JsonObject], Awaitable[bool]] | None = None,
         guard: ResultGuard | None = None,
+        instructions: str | None = None,
     ) -> None:
+        # Guidance a client may give its model (G-277), sent in the initialize and
+        # server/discover results. It reaches the model, so it comes from the
+        # embedder's configuration and is fixed here; no request can set it.
+        self._instructions = _instructions_of(instructions)
         self._server = server
         self._transport = transport
         self._gate = gate if gate is not None else allow_all
@@ -134,32 +158,63 @@ class Server:
         # Discovery precedes version selection, so no agreed-revision metadata
         # can be required here. HTTP bearer/Origin checks stay in the transport.
         if request.method == "server/discover":
-            return _complete(
-                {
-                    "supportedVersions": [LATEST_PROTOCOL_VERSION],
-                    "capabilities": {"tools": {}},
-                    "ttlMs": 0,
-                    "cacheScope": "private",
-                }
-            )
+            discovered: JsonObject = {
+                "supportedVersions": [LATEST_PROTOCOL_VERSION],
+                "capabilities": {"tools": {}},
+            }
+            if self._instructions is not None:
+                discovered["instructions"] = self._instructions
+            return _complete({**discovered, "ttlMs": 0, "cacheScope": "private"})
         params = request.params if request.params is not None else {}
+        # A request carrying ANY stateless metadata key is a stateless request and
+        # is held to the stateless rules; only one with none of them is classic. A
+        # half-formed stateless request must not fall through to the classic path.
+        meta = params.get("_meta") if isinstance(params, dict) else None
+        if not (isinstance(meta, dict) and any(key in meta for key in _STATELESS_KEYS)):
+            return await self._classic(request, params)
         _assert_protocol(params)
         if request.method == "tools/list":
-            return _complete(
-                {
-                    "tools": [
-                        _without_nulls(_payload_of(tool.definition))
-                        for tool in self._tools.values()
-                    ],
-                    "ttlMs": 0,
-                    "cacheScope": "private",
-                }
-            )
+            return _complete({"tools": self._listed(), "ttlMs": 0, "cacheScope": "private"})
         if request.method != "tools/call":
             raise McpError(
                 ErrorCode.PROTOCOL_FAILURE,
-                "Only server/discover, tools/list and tools/call are supported; no initialize handshake.",
+                "Only server/discover, tools/list and tools/call are supported on the stateless revision.",
             )
+        return _complete(await self._call(request, params))
+
+    async def _classic(self, request: TransportRequest, params: JsonObject) -> Any:
+        """The handshake protocol, for clients that open with ``initialize`` (Codex's always does).
+
+        Stateless per request, which the streamable-HTTP transport permits: no session id is issued, so
+        nothing is bound to one. Authentication is the transport's; the registry, gate, mirrors and result
+        guard are the stateless path's own.
+        """
+        if request.method.startswith("notifications/"):
+            return None
+        if request.method == "initialize":
+            return _initialize(params, self._instructions)
+        header = request.headers.get("mcp-protocol-version")
+        if header is not None and header not in _CLASSIC_VERSIONS:
+            raise McpError(
+                ErrorCode.UNSUPPORTED_PROTOCOL_VERSION,
+                f"Protocol version [{header}] is not served on the handshake path; "
+                f"expected one of [{', '.join(_CLASSIC_VERSIONS)}].",
+            )
+        if request.method == "ping":
+            return {}
+        if request.method == "tools/list":
+            return {"tools": self._listed()}
+        if request.method == "tools/call":
+            return await self._call(request, params)
+        raise McpError(
+            ErrorCode.PROTOCOL_FAILURE,
+            "Only initialize, ping, tools/list and tools/call are supported.",
+        )
+
+    def _listed(self) -> list[JsonObject]:
+        return [_without_nulls(_payload_of(tool.definition)) for tool in self._tools.values()]
+
+    async def _call(self, request: TransportRequest, params: JsonObject) -> JsonObject:
         name = params.get("name")
         if not isinstance(name, str) or not name:
             raise McpError(ErrorCode.PROTOCOL_FAILURE, "tools/call requires a tool name.")
@@ -209,7 +264,7 @@ class Server:
         ):
             raise McpError(ErrorCode.PROTOCOL_FAILURE, "The handler must return ToolResult.")
         text = self._guard.guard(self._server, name, result.text)
-        return _complete({"content": [{"type": "text", "text": text}], "isError": result.is_error})
+        return {"content": [{"type": "text", "text": text}], "isError": result.is_error}
 
     def _assert_open(self) -> None:
         if self._closed:
@@ -237,13 +292,51 @@ def _assert_protocol(params: JsonObject) -> None:
         raise McpError(ErrorCode.PROTOCOL_FAILURE, "Client info must be an object when supplied.")
 
 
+def _instructions_of(value: object) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or len(value.encode("utf-8")) > _MAX_INSTRUCTIONS_BYTES
+    ):
+        raise McpError(
+            ErrorCode.PROTOCOL_FAILURE,
+            f"Server instructions must be a non-empty string of at most {_MAX_INSTRUCTIONS_BYTES} bytes.",
+        )
+    return value
+
+
+def _initialize(params: JsonObject, instructions: str | None) -> JsonObject:
+    if (
+        not isinstance(params, dict)
+        or not isinstance(params.get("protocolVersion"), str)
+        or ("capabilities" in params and not isinstance(params["capabilities"], dict))
+        or ("clientInfo" in params and not isinstance(params["clientInfo"], dict))
+    ):
+        raise McpError(
+            ErrorCode.PROTOCOL_FAILURE,
+            "initialize requires a protocolVersion, and object capabilities and clientInfo.",
+        )
+    requested = params["protocolVersion"]
+    version = requested if requested in _CLASSIC_VERSIONS else _CLASSIC_VERSIONS[0]
+    result: JsonObject = {
+        "protocolVersion": version,
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": _SERVER_NAME, "version": _SERVER_VERSION},
+    }
+    if instructions is not None:
+        result["instructions"] = instructions
+    return result
+
+
 def _complete(result: JsonObject) -> JsonObject:
     # Identify the serving software independently of the gate/context label.
     # Fresh objects keep caller mutation from affecting subsequent responses.
     return {
         **result,
         "resultType": "complete",
-        "_meta": {_SERVER_INFO: {"name": "prism-ai-mcp-server", "version": "0.1.0"}},
+        "_meta": {_SERVER_INFO: {"name": _SERVER_NAME, "version": _SERVER_VERSION}},
     }
 
 

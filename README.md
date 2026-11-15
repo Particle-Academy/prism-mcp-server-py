@@ -1,9 +1,31 @@
 # prism-ai-mcp-server
 
-Stateless MCP tool registration and dispatch over a consumer-supplied
+MCP tool registration and dispatch over a consumer-supplied
 `ServerTransport`, with in-memory and authenticated loopback HTTP implementations.
-Python 3.10+, typed module `prism_mcp_server`. No stdio, handshake, sessions, push,
+Python 3.10+, typed module `prism_mcp_server`. No stdio, sessions, push,
 resources or prompts.
+
+Both protocols are served on the same transport and the same tool registry:
+
+- **Stateless** (`2026-07-28`): `server/discover`, then `tools/list` and
+  `tools/call`, each carrying its version and client capabilities in
+  `params._meta`.
+- **Handshake** (`2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`):
+  `initialize`, `notifications/initialized` (answered 202), `ping`,
+  `tools/list` and `tools/call`, for clients that always open with
+  `initialize`, such as Codex. No session id is issued, so every request
+  stands alone. An unknown requested revision is answered with `2025-11-25`.
+
+A request carrying any stateless `_meta` key is held to the stateless rules.
+Bearer and Origin checks, the gate and the result guard apply to both
+protocols in the same way. `SUPPORTED_PROTOCOL_VERSIONS` lists every version
+served, newest first, and `protocol-versions.json` publishes the same list.
+
+`Server(..., instructions="...")` sets the server's `instructions`: guidance a
+client may give its model, sent in the `initialize` and `server/discover`
+results. Because it reaches the model, it comes only from your own
+configuration, fixed at construction; no request can set it. It must be a
+non-empty string of at most 16 KiB.
 
 The sole runtime dependency is `prism-ai-mcp`; there are **zero third-party
 runtime dependencies**. Shared definitions/errors/guards come from `prism_mcp`.

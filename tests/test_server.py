@@ -45,7 +45,7 @@ CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 RESULT_META = {
     "resultType": "complete",
     "_meta": {
-        "io.modelcontextprotocol/serverInfo": {"name": "prism-ai-mcp-server", "version": "0.1.0"}
+        "io.modelcontextprotocol/serverInfo": {"name": "prism-ai-mcp-server", "version": "0.2.0"}
     },
 }
 CORPUS: JsonObject = json.loads(
@@ -683,8 +683,12 @@ def test_malformed_arguments_and_unsupported_methods_fail_closed() -> None:
     async def scenario() -> None:
         server, transport = await setup()
         server.register(definition(), echo)
+        # A request with no stateless metadata is the handshake protocol, served
+        # since 0.2.0 (as in prism-mcp-server-ts#1), not refused. A stateless one
+        # still cannot initialize: that revision has no handshake.
+        listed = await transport.request(TransportRequest("tools/list"))
+        assert [tool["name"] for tool in listed["tools"]] == [definition().name]
         for raw in (
-            TransportRequest("tools/list"),
             request("initialize"),
             request("resources/list"),
             request("tools/call", {"name": "echo", "arguments": []}),

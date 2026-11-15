@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "prism-ai-mcp-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Transport-independent MCP tool serving for the Prism ecosystem."
 readme = "README.md"
 license = "MIT"

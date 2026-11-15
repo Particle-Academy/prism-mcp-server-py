@@ -1,0 +1,4 @@
+{
+  "$comment": "Every MCP protocol version this server serves, newest first. Read by prism-provider-watch, which checks it covers the five newest official MCP schema versions. A test keeps it identical to SUPPORTED_PROTOCOL_VERSIONS.",
+  "versions": ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
+}

@@ -81,7 +81,7 @@ _SERVER_INFO = "io.modelcontextprotocol/serverInfo"
 _PREFIX = "mcp-param-"
 _STATELESS_KEYS = (_VERSION, _CAPABILITIES, _CLIENT_INFO)
 _SERVER_NAME = "prism-ai-mcp-server"
-_SERVER_VERSION = "0.2.0"
+_SERVER_VERSION = "0.2.1"
 
 # The handshake revisions, served for clients that open with `initialize`
 # (Codex's MCP client always does). Newest first; an unknown requested revision

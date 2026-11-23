@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Package metadata names Particle Academy as the author and links the
+  repository, so PyPI shows who publishes `prism-ai-mcp-server` and where its
+  source is. No code change.
+
 ## 0.2.0
 
 - The classic handshake is served beside the stateless revision: `initialize`

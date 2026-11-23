@@ -4,13 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "prism-ai-mcp-server"
-version = "0.2.0"
+version = "0.2.1"
 description = "Transport-independent MCP tool serving for the Prism ecosystem."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
+authors = [{ name = "Particle Academy" }]
 requires-python = ">=3.10"
 dependencies = ["prism-ai-mcp==0.3.0"]
+
+[project.urls]
+Repository = "https://github.com/Particle-Academy/prism-mcp-server-py"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "mypy>=1.11", "ruff>=0.6"]

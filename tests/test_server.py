@@ -45,7 +45,7 @@ CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 RESULT_META = {
     "resultType": "complete",
     "_meta": {
-        "io.modelcontextprotocol/serverInfo": {"name": "prism-ai-mcp-server", "version": "0.2.0"}
+        "io.modelcontextprotocol/serverInfo": {"name": "prism-ai-mcp-server", "version": "0.2.1"}
     },
 }
 CORPUS: JsonObject = json.loads(

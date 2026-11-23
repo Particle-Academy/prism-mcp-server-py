@@ -128,7 +128,7 @@ def test_serves_without_client_info_over_http_while_preserving_security_checks(m
             identity = {
                 "io.modelcontextprotocol/serverInfo": {
                     "name": "prism-ai-mcp-server",
-                    "version": "0.2.0",
+                    "version": "0.2.1",
                 }
             }
             assert reply["result"]["_meta"] == identity
@@ -199,7 +199,7 @@ def test_answers_http_discovery_before_negotiation_with_bearer_and_origin(
                     "_meta": {
                         "io.modelcontextprotocol/serverInfo": {
                             "name": "prism-ai-mcp-server",
-                            "version": "0.2.0",
+                            "version": "0.2.1",
                         }
                     },
                 },

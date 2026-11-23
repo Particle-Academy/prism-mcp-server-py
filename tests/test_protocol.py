@@ -20,7 +20,7 @@ VERSION = "io.modelcontextprotocol/protocolVersion"
 CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 SERVER_INFO = "io.modelcontextprotocol/serverInfo"
-IDENTITY = {"name": "prism-ai-mcp-server", "version": "0.2.0"}
+IDENTITY = {"name": "prism-ai-mcp-server", "version": "0.2.1"}
 
 
 def request(method: str, client_info: bool = True) -> TransportRequest:

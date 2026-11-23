@@ -32,7 +32,7 @@ INITIALIZE: JsonObject = {
     "capabilities": {},
     "clientInfo": {"name": "codex-mcp-client", "version": "0.156.1"},
 }
-IDENTITY = {"name": "prism-ai-mcp-server", "version": "0.2.0"}
+IDENTITY = {"name": "prism-ai-mcp-server", "version": "0.2.1"}
 
 
 def echo(args: JsonObject, _context: ToolContext) -> ToolResult:

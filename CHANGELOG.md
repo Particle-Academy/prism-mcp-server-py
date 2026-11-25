@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- **Breaking:** headers that mirror the request body are now checked against
+  it, per the 2026-07-28 Streamable HTTP transport. An `Mcp-Param-*` header no
+  longer supplies an argument the body left out: the body is the only source of
+  arguments, and such a header is refused. Each `Mcp-Param-*` header is decoded
+  from the `=?base64?...?=` form and must equal its body value; integers compare
+  by value. Undeclared, repeated, malformed and disagreeing headers are refused,
+  and on 2026-07-28 over HTTP every mirrored body value needs its header.
+  `Mcp-Method`, `Mcp-Name` and `MCP-Protocol-Version` must match the body when
+  present.
+- A mismatch is answered with HTTP 400 and JSON-RPC error `-32020`
+  (`HeaderMismatch`), before the gate and the tool. New exports:
+  `HeaderMismatchError` and `HEADER_MISMATCH`.
+- A transport may set `requires_mirrored_headers = False`; `InMemoryTransport`
+  does. A tool handler's `context["headers"]` now carries decoded values.
+- To migrate: send each mirrored value in `arguments` as well as in its header.
+  The prism-mcp clients already do.
+
 ## 0.2.1
 
 - Package metadata names Particle Academy as the author and links the

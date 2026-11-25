@@ -442,7 +442,10 @@ def test_http_preserves_pin_mirrors_and_credential_boundary_with_and_without_mir
                 headers: dict[str, str | list[str]] = {"Cookie": "PRIVATE-COOKIE"}
                 if mirror:
                     headers["Mcp-Param-authorization"] = "public"
-                _, reply = await send(url, token, headers, rpc("tools/call", {"name": "mirror"}))
+                params: JsonObject = {"name": "mirror"}
+                if mirror:
+                    params["arguments"] = {"value": "public"}
+                _, reply = await send(url, token, headers, rpc("tools/call", params))
                 assert observed[-1][0] == ({"value": "public"} if mirror else {})
                 assert observed[-1][1]["headers"] == ({"authorization": "public"} if mirror else {})
                 assert token not in json.dumps(reply) and "PRIVATE-COOKIE" not in json.dumps(reply)

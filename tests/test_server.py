@@ -26,6 +26,7 @@ from prism_mcp import (
 
 from prism_mcp_server import (
     ErrorCode,
+    HeaderMismatchError,
     InMemoryTransport,
     JsonObject,
     McpError,
@@ -133,7 +134,7 @@ def test_registration_and_list_replies_are_snapshots() -> None:
         assert await transport.request(
             request(
                 "tools/call",
-                {"name": "echo"},
+                {"name": "echo", "arguments": {"region": "east"}},
                 {
                     "Mcp-Param-region": "east",
                 },
@@ -235,7 +236,10 @@ def test_credentials_are_never_visible_with_or_without_a_namespaced_mirror(name:
             }
             if mirrored:
                 headers[f"mCp-PaRaM-{name.upper()}"] = "public-mirrored-value"
-            reply = await transport.request(request("tools/call", {"name": "mirror"}, headers))
+            params: JsonObject = {"name": "mirror"}
+            if mirrored:
+                params["arguments"] = {"value": "public-mirrored-value"}
+            reply = await transport.request(request("tools/call", params, headers))
             args, context = observed[-1]
             assert args == ({"value": "public-mirrored-value"} if mirrored else {})
             assert context == {
@@ -253,7 +257,7 @@ def test_credentials_are_never_visible_with_or_without_a_namespaced_mirror(name:
     asyncio.run(scenario())
 
 
-def test_nested_primitives_resolve_before_gate_without_mutating_the_caller() -> None:
+def test_nested_primitives_are_checked_before_gate_without_mutating_the_caller() -> None:
     async def scenario() -> None:
         seen: list[JsonObject] = []
 
@@ -280,7 +284,7 @@ def test_nested_primitives_resolve_before_gate_without_mutating_the_caller() -> 
             ),
             echo,
         )
-        args = {"other": "untouched"}
+        args = {"other": "untouched", "options": {"region": "east", "count": 0, "enabled": False}}
         reply = await transport.request(
             request(
                 "tools/call",
@@ -295,7 +299,10 @@ def test_nested_primitives_resolve_before_gate_without_mutating_the_caller() -> 
         assert seen == [
             {"other": "untouched", "options": {"region": "east", "count": 0, "enabled": False}}
         ]
-        assert args == {"other": "untouched"}
+        assert args == {
+            "other": "untouched",
+            "options": {"region": "east", "count": 0, "enabled": False},
+        }
         assert reply == {
             "content": [
                 {
@@ -326,9 +333,13 @@ def test_malformed_mirrored_integers_never_reach_the_handler(value: str) -> None
             ),
             lambda _args, _context: pytest.fail("Handler must not run"),
         )
-        with pytest.raises(McpError) as error:
+        with pytest.raises(HeaderMismatchError) as error:
             await transport.request(
-                request("tools/call", {"name": "integer"}, {"Mcp-Param-N": value})
+                request(
+                    "tools/call",
+                    {"name": "integer", "arguments": {"value": 1}},
+                    {"Mcp-Param-N": value},
+                )
             )
         assert error.value.code == ErrorCode.PROTOCOL_FAILURE.value
         await server.close()
@@ -374,7 +385,11 @@ def test_prototype_shaped_paths_are_ordinary_dictionary_fields() -> None:
         )
         server.register(definition("prototype", schema), echo)
         reply = await transport.request(
-            request("tools/call", {"name": "prototype"}, {"Mcp-Param-safe": "data"})
+            request(
+                "tools/call",
+                {"name": "prototype", "arguments": {"__proto__": {"polluted": "data"}}},
+                {"Mcp-Param-safe": "data"},
+            )
         )
         assert json.loads(reply["content"][0]["text"]) == {"__proto__": {"polluted": "data"}}
         await server.close()

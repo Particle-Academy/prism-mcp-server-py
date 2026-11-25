@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 from prism_mcp import ErrorCode, McpError, TransportRequest
 
+from ._headers import HEADER_MISMATCH, REPEATED, HeaderMismatchError, is_mirror_header
+
 if TYPE_CHECKING:
     from . import Endpoint, RequestHandler
 
@@ -245,9 +247,15 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._send(415, _rpc_error(None, -32600))
             return
         headers: dict[str, str] = {}
+        # A repeated header that mirrors the body is answered as a header mismatch, which needs the
+        # body's id.
+        repeated = False
         for name, value in self.headers.items():
             key = name.lower()
             if key in headers:
+                if is_mirror_header(key):
+                    repeated = True
+                    continue
                 self._send(400, _rpc_error(None, -32600))
                 return
             headers[key] = value
@@ -291,6 +299,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
         ):
             self._send(400, _rpc_error(None, -32600))
             return
+        if repeated:
+            self._send(
+                400, _mismatch(None if notification else body["id"], HeaderMismatchError(REPEATED))
+            )
+            return
         loop = owner._loop
         assert loop is not None
         with owner._lock:
@@ -317,6 +330,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
             try:
                 result = future.result()  # Deliberately no request deadline.
                 reply = {"jsonrpc": "2.0", "id": body["id"], "result": result}
+            except HeaderMismatchError as error:
+                if not owner._closed:
+                    self._send(400, _mismatch(body["id"], error))
+                return
             except McpError as error:
                 reply = _rpc_error(body["id"], -32000, error.code)
             except concurrent.futures.CancelledError:
@@ -352,6 +369,15 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
 def _reject_constant(value: str) -> Any:
     raise ValueError("Non-JSON numeric constant")
+
+
+def _mismatch(identifier: Any, error: HeaderMismatchError) -> dict[str, Any]:
+    """HTTP 400's body: the specification's HeaderMismatch error, naming a header, never a value."""
+    return {
+        "jsonrpc": "2.0",
+        "id": identifier,
+        "error": {"code": HEADER_MISMATCH, "message": error.message},
+    }
 
 
 def _rpc_error(identifier: Any, code: int, category: str | None = None) -> dict[str, Any]:

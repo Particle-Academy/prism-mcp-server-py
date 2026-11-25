@@ -1,0 +1,586 @@
+{
+  "suite": "mcp-header-mirror",
+  "schema_version": 1,
+  "corpus_version": "0.1.0",
+  "spec": "MCP 2026-07-28, basic/transports/streamable-http.mdx: Request Metadata, Value Encoding, Server Behavior for Custom Headers, Case Sensitivity and Server Validation.",
+  "shared_by": "prism-mcp-server-ts test/fixtures/mcp-header-mirror.json and prism-mcp-server-py tests/fixtures/mcp-header-mirror.json carry these exact bytes. Both suites pin the same SHA-256, so a row changed in one language and not the other fails both.",
+  "harness": {
+    "transport": "Each row is one POST to the real loopback HTTP server, written byte for byte on a raw socket, so header names, casing, repeats and non-ASCII bytes reach the server exactly as listed. Header values are sent as their UTF-8 bytes.",
+    "always_sent": "Host, Authorization (the listener's bearer token), Content-Type: application/json, Accept: application/json, Content-Length and Connection: close.",
+    "standard": "When a row has \"standard\": true, a 2026-07-28 row also sends MCP-Protocol-Version: 2026-07-28, Mcp-Method: tools/call and Mcp-Name: <tool>. A handshake-revision row sends MCP-Protocol-Version: <revision> for 2025-06-18 and later, and nothing for the two earlier revisions, which had no such header.",
+    "body": "A 2026-07-28 row carries the per-request _meta (protocolVersion, clientCapabilities, clientInfo). A handshake-revision row carries no _meta. A row without \"arguments\" sends none.",
+    "outcomes": {
+      "served": "HTTP 200. The tool ran once and saw exactly \"arguments\", and its context saw exactly \"headers\" (lowercased mirror name to decoded value).",
+      "refused": "HTTP 400 with the JSON-RPC error code -32020 and exactly \"message\". Neither the gate nor the tool ran.",
+      "unregistered": "HTTP 200 with the JSON-RPC error code -32000 and data.code tool_call_failed, as for any unknown tool. Neither the gate nor the tool ran."
+    }
+  },
+  "tools": [
+    {
+      "name": "route",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "region": { "type": "string", "x-mcp-header": "Region" },
+          "replicas": { "type": "integer", "x-mcp-header": "Replicas" },
+          "dry": { "type": "boolean", "x-mcp-header": "Dry" },
+          "placement": {
+            "type": "object",
+            "properties": { "zone": { "type": "string", "x-mcp-header": "Zone" } }
+          },
+          "query": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "plain",
+      "inputSchema": { "type": "object", "properties": { "query": { "type": "string" } } }
+    }
+  ],
+  "cases": [
+    {
+      "id": "hdr-0001", "title": "a plain value that matches the body",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "served", "arguments": { "region": "us-west1" }, "headers": { "region": "us-west1" } }
+    },
+    {
+      "id": "hdr-0002", "title": "header names are case-insensitive",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["mCp-pArAm-rEgIoN", "us-west1"]],
+      "expect": { "outcome": "served", "arguments": { "region": "us-west1" }, "headers": { "region": "us-west1" } }
+    },
+    {
+      "id": "hdr-0003", "title": "optional whitespace around a field value is not part of it",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "  us-west1\t"]],
+      "expect": { "outcome": "served", "arguments": { "region": "us-west1" }, "headers": { "region": "us-west1" } }
+    },
+    {
+      "id": "hdr-0004", "title": "a non-ASCII value in the Base64 sentinel",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello, 世界" },
+      "headers": [["Mcp-Param-Region", "=?base64?SGVsbG8sIOS4lueVjA==?="]],
+      "expect": { "outcome": "served", "arguments": { "region": "Hello, 世界" }, "headers": { "region": "Hello, 世界" } }
+    },
+    {
+      "id": "hdr-0005", "title": "leading and trailing spaces survive only inside the sentinel",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": " padded " },
+      "headers": [["Mcp-Param-Region", "=?base64?IHBhZGRlZCA=?="]],
+      "expect": { "outcome": "served", "arguments": { "region": " padded " }, "headers": { "region": " padded " } }
+    },
+    {
+      "id": "hdr-0006", "title": "a value that looks like the sentinel is itself encoded",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "=?base64?literal?=" },
+      "headers": [["Mcp-Param-Region", "=?base64?PT9iYXNlNjQ/bGl0ZXJhbD89?="]],
+      "expect": { "outcome": "served", "arguments": { "region": "=?base64?literal?=" }, "headers": { "region": "=?base64?literal?=" } }
+    },
+    {
+      "id": "hdr-0007", "title": "the empty string in the sentinel",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "" },
+      "headers": [["Mcp-Param-Region", "=?base64??="]],
+      "expect": { "outcome": "served", "arguments": { "region": "" }, "headers": { "region": "" } }
+    },
+    {
+      "id": "hdr-0008", "title": "an integer",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "3"]],
+      "expect": { "outcome": "served", "arguments": { "replicas": 3 }, "headers": { "replicas": "3" } }
+    },
+    {
+      "id": "hdr-0009", "title": "integers compare numerically: 3.0 is 3",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "3.0"]],
+      "expect": { "outcome": "served", "arguments": { "replicas": 3 }, "headers": { "replicas": "3.0" } }
+    },
+    {
+      "id": "hdr-0010", "title": "an encoded integer is decoded before it is compared",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "=?base64?Mw==?="]],
+      "expect": { "outcome": "served", "arguments": { "replicas": 3 }, "headers": { "replicas": "3" } }
+    },
+    {
+      "id": "hdr-0011", "title": "the largest safe integer",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 9007199254740991 },
+      "headers": [["Mcp-Param-Replicas", "9007199254740991"]],
+      "expect": { "outcome": "served", "arguments": { "replicas": 9007199254740991 }, "headers": { "replicas": "9007199254740991" } }
+    },
+    {
+      "id": "hdr-0012", "title": "a boolean",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "dry": false },
+      "headers": [["Mcp-Param-Dry", "false"]],
+      "expect": { "outcome": "served", "arguments": { "dry": false }, "headers": { "dry": "false" } }
+    },
+    {
+      "id": "hdr-0013", "title": "a nested property",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "placement": { "zone": "b" }, "query": "q" },
+      "headers": [["Mcp-Param-Zone", "b"]],
+      "expect": { "outcome": "served", "arguments": { "placement": { "zone": "b" }, "query": "q" }, "headers": { "zone": "b" } }
+    },
+    {
+      "id": "hdr-0014", "title": "every mirror at once",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "eu", "replicas": -7, "dry": true, "placement": { "zone": "a" } },
+      "headers": [["Mcp-Param-Zone", "a"], ["Mcp-Param-Dry", "true"], ["Mcp-Param-Replicas", "-7"], ["Mcp-Param-Region", "eu"]],
+      "expect": { "outcome": "served", "arguments": { "region": "eu", "replicas": -7, "dry": true, "placement": { "zone": "a" } }, "headers": { "region": "eu", "replicas": "-7", "dry": "true", "zone": "a" } }
+    },
+    {
+      "id": "hdr-0015", "title": "a null value is not mirrored, so no header is expected",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": null },
+      "headers": [],
+      "expect": { "outcome": "served", "arguments": { "region": null }, "headers": {} }
+    },
+    {
+      "id": "hdr-0016", "title": "an absent value is not mirrored, so no header is expected",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "query": "only the body" },
+      "headers": [],
+      "expect": { "outcome": "served", "arguments": { "query": "only the body" }, "headers": {} }
+    },
+    {
+      "id": "hdr-0017", "title": "an encoded Mcp-Name is decoded before it is compared",
+      "revision": "2026-07-28", "tool": "route", "standard": false,
+      "arguments": { "region": "us-west1" },
+      "headers": [["MCP-Protocol-Version", "2026-07-28"], ["Mcp-Method", "tools/call"], ["Mcp-Name", "=?base64?cm91dGU=?="], ["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "served", "arguments": { "region": "us-west1" }, "headers": { "region": "us-west1" } }
+    },
+    {
+      "id": "hdr-0018", "title": "the standard headers are not yet required: the published prism-mcp clients do not send them",
+      "revision": "2026-07-28", "tool": "route", "standard": false,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "served", "arguments": { "region": "us-west1" }, "headers": { "region": "us-west1" } }
+    },
+    {
+      "id": "hdr-0101", "title": "a missing header for a value the body carries",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header is required." }
+    },
+    {
+      "id": "hdr-0102", "title": "a missing header for a nested value",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1", "placement": { "zone": "b" } },
+      "headers": [["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Zone] header is required." }
+    },
+    {
+      "id": "hdr-0103", "title": "a different value",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "eu-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0104", "title": "values are case-sensitive",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "US-WEST1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0105", "title": "a hyphen homoglyph (U+2010) in the sentinel",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "=?base64?dXPigJB3ZXN0MQ==?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0106", "title": "a Cyrillic homoglyph (U+0435) in the sentinel",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "=?base64?dXMtd9C1c3Qx?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0107", "title": "padding in the body cannot be matched by a raw header, whose whitespace is stripped",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": " us-west1" },
+      "headers": [["Mcp-Param-Region", " us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0108", "title": "a trailing space the header does not carry",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1 " },
+      "headers": [["Mcp-Param-Region", "=?base64?dXMtd2VzdDE=?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0109", "title": "the same header twice with the same value",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "us-west1"], ["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: a header that mirrors the request body is repeated." }
+    },
+    {
+      "id": "hdr-0110", "title": "the same header twice in different case",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "us-west1"], ["mcp-param-region", "eu-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: a header that mirrors the request body is repeated." }
+    },
+    {
+      "id": "hdr-0111", "title": "a standard header repeated",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Name", "route"], ["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: a header that mirrors the request body is repeated." }
+    },
+    {
+      "id": "hdr-0112", "title": "raw non-ASCII bytes instead of the sentinel",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello, 世界" },
+      "headers": [["Mcp-Param-Region", "Hello, 世界"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header value is malformed." }
+    },
+    {
+      "id": "hdr-0113", "title": "Base64 without its padding",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello" },
+      "headers": [["Mcp-Param-Region", "=?base64?SGVsbG8?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header value is malformed." }
+    },
+    {
+      "id": "hdr-0114", "title": "Base64 with interior whitespace",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello" },
+      "headers": [["Mcp-Param-Region", "=?base64?SGVs bG8=?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header value is malformed." }
+    },
+    {
+      "id": "hdr-0115", "title": "the URL-safe Base64 alphabet",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello" },
+      "headers": [["Mcp-Param-Region", "=?base64?SGVsbG8_?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header value is malformed." }
+    },
+    {
+      "id": "hdr-0116", "title": "Base64 that decodes to invalid UTF-8",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello" },
+      "headers": [["Mcp-Param-Region", "=?base64?/w==?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header value is malformed." }
+    },
+    {
+      "id": "hdr-0117", "title": "the sentinel markers are case-sensitive, so an uppercase one is a literal value",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello" },
+      "headers": [["Mcp-Param-Region", "=?BASE64?SGVsbG8=?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0118", "title": "a value encoded twice is decoded once",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello" },
+      "headers": [["Mcp-Param-Region", "=?base64?PT9iYXNlNjQ/U0dWc2JHOD0/PQ==?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0119", "title": "a body value that looks like the sentinel, sent unencoded",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "=?base64?SGVsbG8=?=" },
+      "headers": [["Mcp-Param-Region", "=?base64?SGVsbG8=?="]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0120", "title": "an empty header value",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "" },
+      "headers": [["Mcp-Param-Region", ""]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header value is malformed." }
+    },
+    {
+      "id": "hdr-0121", "title": "a header for a value the body does not carry",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "us-west1"], ["Mcp-Param-Replicas", "3"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header is present but the request body has no value for it." }
+    },
+    {
+      "id": "hdr-0122", "title": "a header for a value the body sets to null",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": null },
+      "headers": [["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header is present but the request body has no value for it." }
+    },
+    {
+      "id": "hdr-0123", "title": "a header with no arguments at all",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "headers": [["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header is present but the request body has no value for it." }
+    },
+    {
+      "id": "hdr-0124", "title": "a header the tool does not declare",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "us-west1"], ["Mcp-Param-Tenant", "other"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: an Mcp-Param header is not declared by this tool." }
+    },
+    {
+      "id": "hdr-0125", "title": "a header on a tool that mirrors nothing",
+      "revision": "2026-07-28", "tool": "plain", "standard": true,
+      "arguments": { "query": "q" },
+      "headers": [["Mcp-Param-Query", "q"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: an Mcp-Param header is not declared by this tool." }
+    },
+    {
+      "id": "hdr-0126", "title": "an integer with a leading zero",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "03"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0127", "title": "an integer with a plus sign",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "+3"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0128", "title": "an integer in exponent form",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "3e0"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0129", "title": "an integer in hexadecimal",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "0x3"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0130", "title": "a fraction",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "3.5"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0131", "title": "a fraction a float comparison would round away",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "3.0000000000000001"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0132", "title": "one past the body, beyond what a double can tell apart",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 9007199254740991 },
+      "headers": [["Mcp-Param-Replicas", "9007199254740992"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0133", "title": "a body integer outside the safe range",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 9007199254740993 },
+      "headers": [["Mcp-Param-Replicas", "9007199254740993"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the request body value for [Mcp-Param-Replicas] is not a valid integer." }
+    },
+    {
+      "id": "hdr-0134", "title": "a body integer sent as a string",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": "3" },
+      "headers": [["Mcp-Param-Replicas", "3"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the request body value for [Mcp-Param-Replicas] is not a valid integer." }
+    },
+    {
+      "id": "hdr-0135", "title": "a boolean where the body declares an integer",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": true },
+      "headers": [["Mcp-Param-Replicas", "1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the request body value for [Mcp-Param-Replicas] is not a valid integer." }
+    },
+    {
+      "id": "hdr-0136", "title": "a boolean in title case",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "dry": true },
+      "headers": [["Mcp-Param-Dry", "True"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Dry] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0137", "title": "a boolean as a digit",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "dry": true },
+      "headers": [["Mcp-Param-Dry", "1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Dry] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0138", "title": "a string where the body declares a boolean",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "dry": "true" },
+      "headers": [["Mcp-Param-Dry", "true"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the request body value for [Mcp-Param-Dry] is not a valid boolean." }
+    },
+    {
+      "id": "hdr-0139", "title": "a number where the body declares a string",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "region": 1 },
+      "headers": [["Mcp-Param-Region", "1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the request body value for [Mcp-Param-Region] is not a valid string." }
+    },
+    {
+      "id": "hdr-0140", "title": "an Mcp-Method that names another method",
+      "revision": "2026-07-28", "tool": "route", "standard": false,
+      "arguments": { "region": "us-west1" },
+      "headers": [["MCP-Protocol-Version", "2026-07-28"], ["Mcp-Method", "tools/list"], ["Mcp-Name", "route"], ["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Method] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0141", "title": "an Mcp-Name that names another tool",
+      "revision": "2026-07-28", "tool": "route", "standard": false,
+      "arguments": { "region": "us-west1" },
+      "headers": [["MCP-Protocol-Version", "2026-07-28"], ["Mcp-Method", "tools/call"], ["Mcp-Name", "plain"], ["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Name] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0142", "title": "an Mcp-Name in another case",
+      "revision": "2026-07-28", "tool": "route", "standard": false,
+      "arguments": { "region": "us-west1" },
+      "headers": [["MCP-Protocol-Version", "2026-07-28"], ["Mcp-Method", "tools/call"], ["Mcp-Name", "Route"], ["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Name] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0143", "title": "an MCP-Protocol-Version that disagrees with the body",
+      "revision": "2026-07-28", "tool": "route", "standard": false,
+      "arguments": { "region": "us-west1" },
+      "headers": [["MCP-Protocol-Version", "2025-11-25"], ["Mcp-Method", "tools/call"], ["Mcp-Name", "route"], ["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [MCP-Protocol-Version] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0144", "title": "an Mcp-Method with raw non-ASCII bytes",
+      "revision": "2026-07-28", "tool": "route", "standard": false,
+      "arguments": { "region": "us-west1" },
+      "headers": [["MCP-Protocol-Version", "2026-07-28"], ["Mcp-Method", "tools/càll"], ["Mcp-Name", "route"], ["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Method] header value is malformed." }
+    },
+    {
+      "id": "hdr-0146", "title": "an integer header thousands of digits long",
+      "revision": "2026-07-28", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0145", "title": "an unknown tool is refused as unknown, whatever its headers say",
+      "revision": "2026-07-28", "tool": "nope", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "eu-west1"]],
+      "expect": { "outcome": "unregistered" }
+    },
+    {
+      "id": "hdr-0201", "title": "2025-11-25: the revision has no mirrored headers, so none is required",
+      "revision": "2025-11-25", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [],
+      "expect": { "outcome": "served", "arguments": { "region": "us-west1" }, "headers": {} }
+    },
+    {
+      "id": "hdr-0202", "title": "2025-11-25: a header that matches is accepted",
+      "revision": "2025-11-25", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "served", "arguments": { "region": "us-west1" }, "headers": { "region": "us-west1" } }
+    },
+    {
+      "id": "hdr-0203", "title": "2025-11-25: a header that disagrees with the body",
+      "revision": "2025-11-25", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "eu-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0204", "title": "2025-11-25: a header never becomes an argument the body did not send",
+      "revision": "2025-11-25", "tool": "route", "standard": true,
+      "arguments": { "query": "q" },
+      "headers": [["Mcp-Param-Region", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header is present but the request body has no value for it." }
+    },
+    {
+      "id": "hdr-0205", "title": "2025-11-25: a header the tool does not declare",
+      "revision": "2025-11-25", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Tenant", "other"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: an Mcp-Param header is not declared by this tool." }
+    },
+    {
+      "id": "hdr-0206", "title": "2025-11-25: raw non-ASCII bytes",
+      "revision": "2025-11-25", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello, 世界" },
+      "headers": [["Mcp-Param-Region", "Hello, 世界"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Region] header value is malformed." }
+    },
+    {
+      "id": "hdr-0207", "title": "2025-11-25: the same header twice",
+      "revision": "2025-11-25", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Param-Region", "us-west1"], ["MCP-PARAM-REGION", "us-west1"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: a header that mirrors the request body is repeated." }
+    },
+    {
+      "id": "hdr-0208", "title": "2025-11-25: an Mcp-Method that names another method",
+      "revision": "2025-11-25", "tool": "route", "standard": true,
+      "arguments": { "region": "us-west1" },
+      "headers": [["Mcp-Method", "tools/list"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Method] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0209", "title": "2025-06-18: a header never becomes an argument the body did not send",
+      "revision": "2025-06-18", "tool": "route", "standard": true,
+      "headers": [["Mcp-Param-Replicas", "3"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header is present but the request body has no value for it." }
+    },
+    {
+      "id": "hdr-0210", "title": "2025-06-18: an encoded header is decoded and compared",
+      "revision": "2025-06-18", "tool": "route", "standard": true,
+      "arguments": { "region": "Hello" },
+      "headers": [["Mcp-Param-Region", "=?base64?SGVsbG8=?="]],
+      "expect": { "outcome": "served", "arguments": { "region": "Hello" }, "headers": { "region": "Hello" } }
+    },
+    {
+      "id": "hdr-0211", "title": "2025-03-26: a header never becomes an argument the body did not send",
+      "revision": "2025-03-26", "tool": "route", "standard": true,
+      "arguments": {},
+      "headers": [["Mcp-Param-Dry", "true"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Dry] header is present but the request body has no value for it." }
+    },
+    {
+      "id": "hdr-0212", "title": "2025-03-26: a header that disagrees with the body",
+      "revision": "2025-03-26", "tool": "route", "standard": true,
+      "arguments": { "replicas": 3 },
+      "headers": [["Mcp-Param-Replicas", "4"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Replicas] header does not match the request body." }
+    },
+    {
+      "id": "hdr-0213", "title": "2024-11-05: a header never becomes an argument the body did not send",
+      "revision": "2024-11-05", "tool": "route", "standard": true,
+      "arguments": {},
+      "headers": [["Mcp-Param-Zone", "a"]],
+      "expect": { "outcome": "refused", "message": "Header mismatch: the [Mcp-Param-Zone] header is present but the request body has no value for it." }
+    },
+    {
+      "id": "hdr-0214", "title": "2024-11-05: no header is required",
+      "revision": "2024-11-05", "tool": "route", "standard": true,
+      "arguments": { "placement": { "zone": "a" } },
+      "headers": [],
+      "expect": { "outcome": "served", "arguments": { "placement": { "zone": "a" } }, "headers": {} }
+    }
+  ]
+}

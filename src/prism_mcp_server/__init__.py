@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias, TypedDict
@@ -25,11 +24,20 @@ from prism_mcp import (
     allow_all,
 )
 
+from ._headers import (
+    HEADER_MISMATCH,
+    HeaderMismatchError,
+    check_mirrored_headers,
+    check_standard_headers,
+    header_view,
+)
 from .http import LoopbackHttpTransport
 
 __all__ = [
+    "HEADER_MISMATCH",
     "SUPPORTED_PROTOCOL_VERSIONS",
     "ErrorCode",
+    "HeaderMismatchError",
     "InMemoryTransport",
     "JsonObject",
     "LoopbackHttpTransport",
@@ -69,6 +77,14 @@ class Endpoint(TypedDict):
 
 
 class ServerTransport(Protocol):
+    """A transport may set ``requires_mirrored_headers = False`` to opt out of requiring headers.
+
+    When it is absent or true, requests arrive with HTTP headers, so a 2026-07-28 tools/call must
+    carry an ``Mcp-Param-*`` header for every mirrored value in its body. A transport opts OUT, so a
+    custom HTTP transport is held to the rule by default. Headers that ARE present are checked
+    against the body on every transport and revision.
+    """
+
     async def listen(self, handler: RequestHandler) -> Endpoint: ...
 
     async def close(self) -> None: ...
@@ -78,7 +94,6 @@ _VERSION = "io.modelcontextprotocol/protocolVersion"
 _CAPABILITIES = "io.modelcontextprotocol/clientCapabilities"
 _CLIENT_INFO = "io.modelcontextprotocol/clientInfo"
 _SERVER_INFO = "io.modelcontextprotocol/serverInfo"
-_PREFIX = "mcp-param-"
 _STATELESS_KEYS = (_VERSION, _CAPABILITIES, _CLIENT_INFO)
 _SERVER_NAME = "prism-ai-mcp-server"
 _SERVER_VERSION = "0.2.1"
@@ -128,6 +143,7 @@ class Server:
         )
         self._tools: dict[str, _RegisteredTool] = {}
         self._refused: set[str] = set()
+        self._require_headers = getattr(transport, "requires_mirrored_headers", True) is not False
         self._closed = False
 
     def register(self, definition: ToolDefinition, handler: ToolHandler) -> None:
@@ -155,6 +171,15 @@ class Server:
 
     async def handle(self, request: TransportRequest) -> Any:
         self._assert_open()
+        params = request.params if request.params is not None else {}
+        # A request carrying ANY stateless metadata key is a stateless request and is held to the
+        # stateless rules; only one with none of them is classic. A half-formed stateless request
+        # must not fall through to the classic path.
+        meta = params.get("_meta") if isinstance(params, dict) else None
+        stateless = isinstance(meta, dict) and any(key in meta for key in _STATELESS_KEYS)
+        # Headers that mirror the body are checked against it before anything else reads either.
+        headers = header_view(request.headers)
+        check_standard_headers(headers, request.method, params, stateless)
         # Discovery precedes version selection, so no agreed-revision metadata
         # can be required here. HTTP bearer/Origin checks stay in the transport.
         if request.method == "server/discover":
@@ -165,13 +190,8 @@ class Server:
             if self._instructions is not None:
                 discovered["instructions"] = self._instructions
             return _complete({**discovered, "ttlMs": 0, "cacheScope": "private"})
-        params = request.params if request.params is not None else {}
-        # A request carrying ANY stateless metadata key is a stateless request and
-        # is held to the stateless rules; only one with none of them is classic. A
-        # half-formed stateless request must not fall through to the classic path.
-        meta = params.get("_meta") if isinstance(params, dict) else None
-        if not (isinstance(meta, dict) and any(key in meta for key in _STATELESS_KEYS)):
-            return await self._classic(request, params)
+        if not stateless:
+            return await self._classic(request, params, headers)
         _assert_protocol(params)
         if request.method == "tools/list":
             return _complete({"tools": self._listed(), "ttlMs": 0, "cacheScope": "private"})
@@ -180,9 +200,11 @@ class Server:
                 ErrorCode.PROTOCOL_FAILURE,
                 "Only server/discover, tools/list and tools/call are supported on the stateless revision.",
             )
-        return _complete(await self._call(request, params))
+        return _complete(await self._call(params, headers, True))
 
-    async def _classic(self, request: TransportRequest, params: JsonObject) -> Any:
+    async def _classic(
+        self, request: TransportRequest, params: JsonObject, headers: dict[str, Any]
+    ) -> Any:
         """The handshake protocol, for clients that open with ``initialize`` (Codex's always does).
 
         Stateless per request, which the streamable-HTTP transport permits: no session id is issued, so
@@ -205,7 +227,7 @@ class Server:
         if request.method == "tools/list":
             return {"tools": self._listed()}
         if request.method == "tools/call":
-            return await self._call(request, params)
+            return await self._call(params, headers, False)
         raise McpError(
             ErrorCode.PROTOCOL_FAILURE,
             "Only initialize, ping, tools/list and tools/call are supported.",
@@ -214,7 +236,9 @@ class Server:
     def _listed(self) -> list[JsonObject]:
         return [_without_nulls(_payload_of(tool.definition)) for tool in self._tools.values()]
 
-    async def _call(self, request: TransportRequest, params: JsonObject) -> JsonObject:
+    async def _call(
+        self, params: JsonObject, headers: dict[str, Any], stateless: bool
+    ) -> JsonObject:
         name = params.get("name")
         if not isinstance(name, str) or not name:
             raise McpError(ErrorCode.PROTOCOL_FAILURE, "tools/call requires a tool name.")
@@ -230,8 +254,11 @@ class Server:
         if not isinstance(arguments, dict):
             raise McpError(ErrorCode.PROTOCOL_FAILURE, "Tool arguments must be an object.")
         args = _clone_object(arguments)
-        headers = _mirrored_headers(request.headers)
-        _resolve_mirrors(tool.mirrored, headers, args)
+        # Before the gate and the tool: neither may act on a call whose headers say something its
+        # body does not.
+        mirrored = check_mirrored_headers(
+            tool.mirrored, headers, args, stateless and self._require_headers
+        )
         verdict = self._gate(self._server, name, args)
         # Serving is asynchronous in both languages; gates may be sync or async,
         # as they may in the sibling client since prism-ai-mcp 0.2.1.
@@ -250,7 +277,7 @@ class Server:
             raise McpError(ErrorCode.TOOL_DENIED, "The gate refused this tool call.")
         self._assert_open()
         try:
-            result = tool.handler(args, {"server": self._server, "tool": name, "headers": headers})
+            result = tool.handler(args, {"server": self._server, "tool": name, "headers": mirrored})
             if inspect.isawaitable(result):
                 result = await result
         except Exception as error:  # noqa: BLE001 -- sanitize arbitrary application failures
@@ -371,66 +398,11 @@ def _payload_of(tool: ToolDefinition) -> JsonObject:
     )
 
 
-def _mirrored_headers(raw: dict[str, str]) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    for name, value in raw.items():
-        if not name.lower().startswith(_PREFIX):
-            continue
-        key = name[len(_PREFIX) :].lower()
-        if not isinstance(value, str) or key in headers:
-            raise McpError(
-                ErrorCode.PROTOCOL_FAILURE, "Mirrored headers require unambiguous string values."
-            )
-        headers[key] = value
-    # Authorization, Cookie, Origin and all other unnamespaced headers stay private.
-    return headers
-
-
-def _resolve_mirrors(
-    mirrored: MirroredParameters, headers: dict[str, str], args: JsonObject
-) -> None:
-    for name, parameter in mirrored.parameters.items():
-        raw = headers.get(name.lower())
-        if raw is None:
-            continue
-        value: str | int | bool = raw
-        if parameter["type"] == "boolean":
-            if raw not in ("true", "false"):
-                raise McpError(ErrorCode.PROTOCOL_FAILURE, "Invalid mirrored boolean.")
-            value = raw == "true"
-        elif parameter["type"] == "integer":
-            if re.fullmatch(r"-?(0|[1-9][0-9]*)", raw) is None:
-                raise McpError(ErrorCode.PROTOCOL_FAILURE, "Invalid mirrored integer.")
-            value = int(raw)
-            if abs(value) > 2**53 - 1:
-                raise McpError(ErrorCode.PROTOCOL_FAILURE, "Invalid mirrored integer.")
-        target = args
-        path = parameter["path"]
-        for segment in path[:-1]:
-            if segment not in target:
-                target[segment] = {}
-            nested = target[segment]
-            if not isinstance(nested, dict):
-                raise McpError(
-                    ErrorCode.PROTOCOL_FAILURE, "Mirrored path conflicts with tool arguments."
-                )
-            target = nested
-        leaf = path[-1]
-        if leaf in target and (
-            target[leaf] != value
-            or (
-                (type(target[leaf]) is bool or type(value) is bool)
-                and type(target[leaf]) is not type(value)
-            )
-        ):
-            raise McpError(
-                ErrorCode.PROTOCOL_FAILURE, "Mirrored header conflicts with tool arguments."
-            )
-        target[leaf] = value
-
-
 class InMemoryTransport:
     """In-process transport. No sockets, HTTP authentication or request timeout."""
+
+    #: In process there are no HTTP headers to require; any that a request does carry are still checked.
+    requires_mirrored_headers = False
 
     def __init__(self) -> None:
         self._handler: RequestHandler | None = None

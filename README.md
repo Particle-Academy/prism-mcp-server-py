@@ -79,11 +79,27 @@ server awaits the verdict before permitting execution; `async def` returning
 
 Only `Mcp-Param-*` headers reach handlers. The prefix is required and stripped
 case-insensitively; context keys are lowercase. Raw `Authorization`, `Cookie`,
-`Origin` and other unnamespaced headers stay private. Shared
-`MirroredParameters` resolve nested string/integer/boolean fields into arguments
-before the gate. Conflicting body/header values, ambiguous headers and invalid
-primitive encodings are refused. Integers use the shared JS-safe range for
-cross-language agreement. Other application argument validation belongs to handlers.
+`Origin` and other unnamespaced headers stay private. Other application argument
+validation belongs to handlers.
+
+Headers that mirror the request body are checked against it before the gate and
+the tool, as the 2026-07-28 Streamable HTTP transport specifies. The body is the
+only source of a call's arguments; a header never adds one.
+
+- Each `Mcp-Param-*` header is decoded (`=?base64?...?=`) and must equal the body
+  value at its `x-mcp-header` path. Integers compare by value (`3.0` is `3`) within
+  the JS-safe range.
+- A header the tool does not declare, a header for a value the body does not
+  carry, a repeated or malformed header, and a header that disagrees with the
+  body are all refused.
+- On 2026-07-28 over HTTP, every mirrored value in the body needs its header. The
+  handshake revisions define no mirrored headers, so none is required there, and
+  any that are sent are still checked. `InMemoryTransport` requires none either; a
+  custom transport opts out with `requires_mirrored_headers = False`.
+- `Mcp-Method`, `Mcp-Name` and `MCP-Protocol-Version` must match the body when
+  present. They are not yet required.
+- The HTTP transport answers a mismatch with status 400 and JSON-RPC error
+  `-32020` (`HeaderMismatch`). In process it is a `HeaderMismatchError`.
 
 `tools/list` and `tools/call` require `params['_meta']` with
 `io.modelcontextprotocol/protocolVersion: '2026-07-28'`,
